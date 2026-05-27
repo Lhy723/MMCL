@@ -621,6 +621,24 @@ struct NeoForgeVersion: Codable, Identifiable, Equatable {
     }
 }
 
+struct CurseForgeSearchResult: Codable, Identifiable, Equatable {
+    var id: Int
+    var name: String
+    var summary: String
+    var downloadCount: Int
+    var websiteUrl: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, summary
+        case downloadCount = "downloadCount"
+        case websiteUrl = "websiteUrl"
+    }
+}
+
+struct CurseForgeSearchResponse: Codable, Equatable {
+    var data: [CurseForgeSearchResult]
+}
+
 struct ModrinthSearchResult: Codable, Identifiable, Equatable {
     var id: String
     var slug: String

@@ -1351,6 +1351,33 @@ struct AuthService: AuthServicing {
     }
 }
 
+protocol CurseForgeServicing {
+    func search(query: String, gameVersion: String?) async throws -> [CurseForgeSearchResult]
+}
+
+struct CurseForgeService: CurseForgeServicing {
+    let baseURL = URL(string: "https://api.curseforge.com")!
+    let apiKey = "$2a$10$bL4bIL5pUWqfcO7KQtnMReakwtfHbNKh6v1uTpKlzhwoueEJQnPnm"
+
+    func search(query: String, gameVersion: String? = nil) async throws -> [CurseForgeSearchResult] {
+        var components = URLComponents(url: baseURL.appendingPathComponent("/v1/mods/search"), resolvingAgainstBaseURL: false)!
+        var queryItems = [
+            URLQueryItem(name: "gameId", value: "432"),
+            URLQueryItem(name: "searchFilter", value: query),
+            URLQueryItem(name: "pageSize", value: "20")
+        ]
+        if let gv = gameVersion {
+            queryItems.append(URLQueryItem(name: "gameVersion", value: gv))
+        }
+        components.queryItems = queryItems
+        var request = URLRequest(url: components.url!)
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "x-api-key")
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let response = try JSONDecoder().decode(CurseForgeSearchResponse.self, from: data)
+        return response.data
+    }
+}
+
 enum AuthError: LocalizedError, Equatable {
     case userDeclined
     case codeExpired

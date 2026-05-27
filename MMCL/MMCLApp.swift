@@ -20,7 +20,12 @@ struct MMCLApp: App {
         }
 
         Settings {
-            SettingsView(store: store)
+            TabView {
+                SettingsView(store: store)
+                    .tabItem { Label("通用", systemImage: "gear") }
+                HelpView()
+                    .tabItem { Label("帮助", systemImage: "questionmark.circle") }
+            }
         }
     }
 }

@@ -34,6 +34,8 @@ struct SidebarView: View {
                     .tag(LauncherStore.Section.downloads)
                 Label("Modrinth", systemImage: "square.grid.2x2")
                     .tag(LauncherStore.Section.content)
+                Label("CurseForge", systemImage: "flame")
+                    .tag(LauncherStore.Section.curseforge)
                 Label("诊断日志", systemImage: "stethoscope")
                     .tag(LauncherStore.Section.diagnostics)
             }

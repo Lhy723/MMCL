@@ -259,6 +259,63 @@ struct DiagnosticsView: View {
     }
 }
 
+struct CurseForgeView: View {
+    @ObservedObject var store: LauncherStore
+    @State private var searchText = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("CurseForge")
+                    .font(.largeTitle.weight(.semibold))
+                Text("搜索 CurseForge 上的 Mod。")
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                TextField("搜索 Mod...", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { Task { await store.searchCurseForge(query: searchText) } }
+                Button {
+                    Task { await store.searchCurseForge(query: searchText) }
+                } label: { Label("搜索", systemImage: "magnifyingglass") }
+                .disabled(searchText.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            ScrollView {
+                LazyVStack(spacing: 10) {
+                    ForEach(store.curseForgeResults) { result in
+                        CurseForgeRow(result: result)
+                    }
+                }
+            }
+            Spacer()
+        }
+        .padding(24)
+        .navigationTitle("CurseForge")
+    }
+}
+
+private struct CurseForgeRow: View {
+    let result: CurseForgeSearchResult
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(result.name)
+                    .font(.headline)
+                Text(result.summary)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Label("\(result.downloadCount)", systemImage: "arrow.down")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
 private struct DiagnosticReportView: View {
     let report: DiagnosticReport
 
@@ -349,6 +406,21 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                }
+            }
+
+            Section("关于") {
+                HStack {
+                    Text("当前版本")
+                    Spacer()
+                    Text(store.currentVersion)
+                }
+                Button("检查更新") {
+                    Task { await store.checkForUpdates() }
+                }
+                if store.updateAvailable, let v = store.latestVersion {
+                    Text("新版本可用：\(v)")
+                        .foregroundStyle(.blue)
                 }
             }
         }

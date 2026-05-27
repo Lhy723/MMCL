@@ -6,6 +6,7 @@ final class LauncherStore: ObservableObject {
         case instance(UUID)
         case downloads
         case content
+        case curseforge
         case diagnostics
     }
 
@@ -41,6 +42,13 @@ final class LauncherStore: ObservableObject {
     @Published var showingModrinthDetail: Bool = false
     @Published var selectedModrinthProject: ModrinthSearchResult?
 
+    @Published var curseForgeResults: [CurseForgeSearchResult] = []
+    @Published var curseForgeSearchQuery: String = ""
+
+    let currentVersion = "0.1.0"
+    @Published var latestVersion: String?
+    @Published var updateAvailable = false
+
     @Published var colorScheme: AppColorScheme = .system
 
     let speedTracker = DownloadSpeedTracker()
@@ -55,6 +63,7 @@ final class LauncherStore: ObservableObject {
     private let forgeService: ForgeServicing
     private let neoForgeService: NeoForgeServicing
     let modrinthService: ModrinthServicing
+    let curseForgeService: CurseForgeServicing
     private let authService: AuthServicing
     private let diagnosticService: DiagnosticServicing
 
@@ -76,6 +85,7 @@ final class LauncherStore: ObservableObject {
         forgeService: ForgeServicing = ForgeService(),
         neoForgeService: NeoForgeServicing = NeoForgeService(),
         modrinthService: ModrinthServicing = ModrinthService(),
+        curseForgeService: CurseForgeServicing = CurseForgeService(),
         authService: AuthServicing = AuthService(),
         diagnosticService: DiagnosticServicing = DiagnosticService()
     ) {
@@ -96,6 +106,7 @@ final class LauncherStore: ObservableObject {
         self.forgeService = forgeService
         self.neoForgeService = neoForgeService
         self.modrinthService = modrinthService
+        self.curseForgeService = curseForgeService
         self.authService = authService
         self.diagnosticService = diagnosticService
         self.selectedJavaRuntimeID = javaRuntimes.first?.id
@@ -752,6 +763,42 @@ final class LauncherStore: ObservableObject {
                 ),
                 at: 0
             )
+        }
+    }
+
+    func searchCurseForge(query: String) async {
+        curseForgeSearchQuery = query
+        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
+            curseForgeResults = []
+            return
+        }
+        do {
+            curseForgeResults = try await curseForgeService.search(query: query, gameVersion: selectedInstance?.gameVersion)
+        } catch {
+            diagnostics.insert(
+                DiagnosticReport(title: "CurseForge 搜索失败", severity: .error, summary: error.localizedDescription, suggestedActions: []),
+                at: 0
+            )
+        }
+    }
+
+    func checkForUpdates() async {
+        guard let url = URL(string: "https://api.github.com/repos/your-repo/MMCL/releases/latest") else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let tagName = json?["tag_name"] as? String ?? ""
+            let version = tagName.replacingOccurrences(of: "v", with: "")
+            if version != currentVersion {
+                latestVersion = version
+                updateAvailable = true
+                diagnostics.insert(
+                    DiagnosticReport(title: "发现新版本", severity: .info, summary: "最新版本 \(version)，当前版本 \(currentVersion)。", suggestedActions: ["前往 GitHub 下载最新版本"]),
+                    at: 0
+                )
+            }
+        } catch {
+            // Silent fail for update check
         }
     }
 

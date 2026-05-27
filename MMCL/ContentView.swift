@@ -82,6 +82,8 @@ struct ContentView: View {
             DownloadsView(store: store)
         case .content:
             ContentProjectsView(store: store)
+        case .curseforge:
+            CurseForgeView(store: store)
         case .diagnostics:
             DiagnosticsView(store: store)
         case .none:
