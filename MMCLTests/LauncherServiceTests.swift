@@ -416,6 +416,42 @@ final class LauncherServiceTests: XCTestCase {
         XCTAssertEqual(profile.arguments?.game?.first, "--assetIndex")
     }
 
+    func testModrinthSearchResponseParsesHits() throws {
+        let json = """
+        {
+            "hits": [
+                {"id": "AqQJnBxM", "slug": "sodium", "title": "Sodium", "description": "A modern rendering engine", "projectType": "mod", "downloads": 5000000, "categories": ["performance", "optimization"]}
+            ],
+            "total_hits": 1
+        }
+        """.data(using: .utf8)!
+        let response = try JSONDecoder.mmcl.decode(ModrinthSearchResponse.self, from: json)
+        XCTAssertEqual(response.totalHits, 1)
+        XCTAssertEqual(response.hits.first?.title, "Sodium")
+        XCTAssertEqual(response.hits.first?.downloads, 5000000)
+    }
+
+    func testModrinthVersionParsesFilesAndLoaders() throws {
+        let json = """
+        [
+            {
+                "id": "abc123",
+                "name": "Sodium 0.6.0",
+                "version_number": "0.6.0",
+                "game_versions": ["1.21.5"],
+                "loaders": ["fabric"],
+                "files": [
+                    {"filename": "sodium-fabric-0.6.0.jar", "url": "https://example.com/sodium.jar", "size": 12345, "primary": true}
+                ]
+            }
+        ]
+        """.data(using: .utf8)!
+        let versions = try JSONDecoder.mmcl.decode([ModrinthVersion].self, from: json)
+        XCTAssertEqual(versions.count, 1)
+        XCTAssertEqual(versions.first?.files.first?.filename, "sodium-fabric-0.6.0.jar")
+        XCTAssertEqual(versions.first?.loaders, ["fabric"])
+    }
+
     private static let legacyArgumentsMetadataJSON = """
     {
       "id": "1.12.2",

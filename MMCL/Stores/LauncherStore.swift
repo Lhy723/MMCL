@@ -28,12 +28,16 @@ final class LauncherStore: ObservableObject {
     @Published var showingCreateSheet: Bool = false
     @Published var showingLogSheet: Bool = false
 
+    @Published var modrinthSearchResults: [ModrinthSearchResult] = []
+    @Published var modrinthSearchQuery: String = ""
+
     private let launchService: LaunchServicing
     private let downloadService: DownloadServicing
     private let versionService: VersionManifestServicing
     private let javaRuntimeService: JavaRuntimeServicing
     private let instanceService: InstanceServicing
     private let fabricService: FabricServicing
+    private let modrinthService: ModrinthServicing
 
     init(
         instances: [LauncherInstance] = LauncherStore.sampleInstances,
@@ -48,7 +52,8 @@ final class LauncherStore: ObservableObject {
         versionService: VersionManifestServicing = VersionManifestService(),
         javaRuntimeService: JavaRuntimeServicing = JavaRuntimeService(),
         instanceService: InstanceServicing = InstanceService(),
-        fabricService: FabricServicing = FabricService()
+        fabricService: FabricServicing = FabricService(),
+        modrinthService: ModrinthServicing = ModrinthService()
     ) {
         self.instances = instances
         self.downloadJobs = downloadJobs
@@ -63,6 +68,7 @@ final class LauncherStore: ObservableObject {
         self.javaRuntimeService = javaRuntimeService
         self.instanceService = instanceService
         self.fabricService = fabricService
+        self.modrinthService = modrinthService
         self.selectedJavaRuntimeID = javaRuntimes.first?.id
         self.selectedSection = instances.first.map { .instance($0.id) } ?? .downloads
     }
@@ -477,6 +483,55 @@ final class LauncherStore: ObservableObject {
                     severity: .error,
                     summary: error.localizedDescription,
                     suggestedActions: ["检查网络连接", "稍后重试"]
+                ),
+                at: 0
+            )
+        }
+    }
+
+    func searchModrinth(query: String) async {
+        modrinthSearchQuery = query
+        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
+            modrinthSearchResults = []
+            return
+        }
+        do {
+            let response = try await modrinthService.search(query: query, facets: nil)
+            modrinthSearchResults = response.hits
+        } catch {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "Modrinth 搜索失败",
+                    severity: .error,
+                    summary: error.localizedDescription,
+                    suggestedActions: ["检查网络连接", "稍后重试"]
+                ),
+                at: 0
+            )
+        }
+    }
+
+    func installModrinthMod(version: ModrinthVersion, file: ModrinthFile, for instance: LauncherInstance) async {
+        let modsDir = instance.rootDirectory.appendingPathComponent("mods", isDirectory: true)
+        let destination = modsDir.appendingPathComponent(file.filename)
+        do {
+            try await modrinthService.downloadFile(from: file.url, to: destination)
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "Mod 已安装",
+                    severity: .info,
+                    summary: "\(version.name) 已下载到 \(instance.name) 的 mods 目录。",
+                    suggestedActions: ["启动游戏加载 mod"]
+                ),
+                at: 0
+            )
+        } catch {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "Mod 下载失败",
+                    severity: .error,
+                    summary: "\(file.filename)：\(error.localizedDescription)",
+                    suggestedActions: ["检查网络连接", "重新尝试下载"]
                 ),
                 at: 0
             )

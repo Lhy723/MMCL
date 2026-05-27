@@ -787,10 +787,68 @@ enum LaunchExecutionError: LocalizedError, Equatable {
 
 protocol ModrinthServicing {
     var baseURL: URL { get }
+    func search(query: String, facets: [String]?) async throws -> ModrinthSearchResponse
+    func fetchProject(id: String) async throws -> ModrinthProject
+    func fetchVersions(projectID: String, gameVersion: String?, loader: String?) async throws -> [ModrinthVersion]
+    func downloadFile(from urlString: String, to destination: URL) async throws
 }
 
 struct ModrinthService: ModrinthServicing {
     let baseURL = URL(string: "https://api.modrinth.com/v2")!
+
+    func search(query: String, facets: [String]? = nil) async throws -> ModrinthSearchResponse {
+        var components = URLComponents(url: baseURL.appendingPathComponent("search"), resolvingAgainstBaseURL: false)!
+        var queryItems = [URLQueryItem(name: "query", value: query)]
+        if let facets {
+            queryItems.append(URLQueryItem(name: "facets", value: "[\(facets.joined(separator: ","))]"))
+        }
+        queryItems.append(URLQueryItem(name: "limit", value: "20"))
+        components.queryItems = queryItems
+        let (data, _) = try await URLSession.shared.data(from: components.url!)
+        return try JSONDecoder.mmcl.decode(ModrinthSearchResponse.self, from: data)
+    }
+
+    func fetchProject(id: String) async throws -> ModrinthProject {
+        let url = baseURL.appendingPathComponent("project/\(id)")
+        let (data, _) = try await URLSession.shared.data(from: url)
+        return try JSONDecoder.mmcl.decode(ModrinthProject.self, from: data)
+    }
+
+    func fetchVersions(projectID: String, gameVersion: String? = nil, loader: String? = nil) async throws -> [ModrinthVersion] {
+        var components = URLComponents(url: baseURL.appendingPathComponent("project/\(projectID)/version"), resolvingAgainstBaseURL: false)!
+        var queryItems = [URLQueryItem]()
+        if let gameVersion {
+            queryItems.append(URLQueryItem(name: "game_versions", value: "[\"\(gameVersion)\"]"))
+        }
+        if let loader {
+            queryItems.append(URLQueryItem(name: "loaders", value: "[\"\(loader)\"]"))
+        }
+        if !queryItems.isEmpty {
+            components.queryItems = queryItems
+        }
+        let (data, _) = try await URLSession.shared.data(from: components.url!)
+        return try JSONDecoder.mmcl.decode([ModrinthVersion].self, from: data)
+    }
+
+    func downloadFile(from urlString: String, to destination: URL) async throws {
+        guard let url = URL(string: urlString) else {
+            throw ModrinthError.invalidURL(urlString)
+        }
+        let (data, _) = try await URLSession.shared.data(from: url)
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: destination, options: .atomic)
+    }
+}
+
+enum ModrinthError: LocalizedError, Equatable {
+    case invalidURL(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL(let url):
+            return "无效的下载地址：\(url)"
+        }
+    }
 }
 
 protocol FabricServicing {

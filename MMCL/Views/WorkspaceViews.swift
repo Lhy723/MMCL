@@ -140,54 +140,88 @@ private struct DownloadJobRow: View {
 
 struct ContentProjectsView: View {
     @ObservedObject var store: LauncherStore
+    @State private var searchText: String = ""
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Modrinth")
-                        .font(.largeTitle.weight(.semibold))
-                    Text("优先接入 Modrinth 搜索、详情和安装；CurseForge 留到后续阶段。")
-                        .foregroundStyle(.secondary)
-                }
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Modrinth")
+                    .font(.largeTitle.weight(.semibold))
+                Text("搜索并安装 Mod、资源包、光影包。")
+                    .foregroundStyle(.secondary)
+            }
 
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 12)], spacing: 12) {
-                    ForEach(store.featuredProjects) { project in
-                        ProjectTile(project: project)
+            HStack {
+                TextField("搜索 Mod...", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        Task { await store.searchModrinth(query: searchText) }
+                    }
+
+                Button {
+                    Task { await store.searchModrinth(query: searchText) }
+                } label: {
+                    Label("搜索", systemImage: "magnifyingglass")
+                }
+                .disabled(searchText.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+
+            if store.modrinthSearchResults.isEmpty && !searchText.isEmpty && store.modrinthSearchQuery == searchText {
+                ContentUnavailableView("没有找到结果", systemImage: "magnifyingglass", description: Text("试试其他关键词"))
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(store.modrinthSearchResults) { result in
+                            ModrinthSearchRow(result: result)
+                        }
                     }
                 }
             }
-            .padding(24)
+
+            Spacer()
         }
+        .padding(24)
         .navigationTitle("Modrinth")
     }
 }
 
-private struct ProjectTile: View {
-    let project: ContentProject
+private struct ModrinthSearchRow: View {
+    let result: ModrinthSearchResult
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Image(systemName: "square.grid.2x2")
-                    .foregroundStyle(.tint)
-                Text(project.type.rawValue)
-                    .font(.caption)
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(result.title)
+                        .font(.headline)
+                    Text(result.projectType)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.quaternary, in: Capsule())
+                }
+                Text(result.description)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
-                Spacer()
+                    .lineLimit(2)
+                HStack(spacing: 12) {
+                    Label("\(result.downloads)", systemImage: "arrow.down")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach(result.categories.prefix(3), id: \.self) { category in
+                        Text(category)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(.tertiary, in: Capsule())
+                    }
+                }
             }
-
-            Text(project.title)
-                .font(.headline)
-                .lineLimit(1)
-            Text(project.source)
-                .foregroundStyle(.secondary)
-            Text(project.loaders.map(\.rawValue).joined(separator: " / "))
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Spacer()
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
     }
 }

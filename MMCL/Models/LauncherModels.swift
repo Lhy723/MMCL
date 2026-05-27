@@ -562,6 +562,76 @@ struct FabricProfile: Codable, Equatable {
     }
 }
 
+struct ModrinthSearchResult: Codable, Identifiable, Equatable {
+    var id: String
+    var slug: String
+    var title: String
+    var description: String
+    var projectType: String
+    var downloads: Int
+    var iconURL: String?
+    var categories: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case id, slug, title, description, projectType, downloads
+        case iconURL = "icon_url"
+        case categories
+    }
+}
+
+struct ModrinthSearchResponse: Codable, Equatable {
+    var hits: [ModrinthSearchResult]
+    var totalHits: Int
+
+    enum CodingKeys: String, CodingKey {
+        case hits
+        case totalHits = "total_hits"
+    }
+}
+
+struct ModrinthProject: Codable, Identifiable, Equatable {
+    var id: String
+    var slug: String
+    var title: String
+    var description: String
+    var projectType: String
+    var body: String
+    var iconURL: String?
+    var downloads: Int
+    var gameVersions: [String]
+    var loaders: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case id, slug, title, description, projectType, body, downloads
+        case iconURL = "icon_url"
+        case gameVersions = "game_versions"
+        case loaders
+    }
+}
+
+struct ModrinthVersion: Codable, Identifiable, Equatable {
+    var id: String
+    var name: String
+    var versionNumber: String
+    var gameVersions: [String]
+    var loaders: [String]
+    var files: [ModrinthFile]
+
+    enum CodingKeys: String, CodingKey {
+        case id, name
+        case versionNumber = "version_number"
+        case gameVersions = "game_versions"
+        case loaders, files
+    }
+}
+
+struct ModrinthFile: Codable, Equatable {
+    var filename: String
+    var url: String
+    var size: Int64
+    var primary: Bool
+}
+
 extension JSONEncoder {
     static var mmcl: JSONEncoder {
         let encoder = JSONEncoder()
