@@ -130,6 +130,38 @@ final class LauncherStore: ObservableObject {
         return String(decoding: data, as: UTF8.self)
     }
 
+    func deleteInstance(_ instance: LauncherInstance) {
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: instance.rootDirectory.path) {
+            do {
+                try fileManager.removeItem(at: instance.rootDirectory)
+            } catch {
+                diagnostics.insert(
+                    DiagnosticReport(
+                        title: "删除实例目录失败",
+                        severity: .warning,
+                        summary: "\(instance.name)：\(error.localizedDescription)",
+                        suggestedActions: ["检查文件权限", "手动删除目录"]
+                    ),
+                    at: 0
+                )
+            }
+        }
+        instances.removeAll { $0.id == instance.id }
+        if case .instance(let id) = selectedSection, id == instance.id {
+            selectedSection = instances.first.map { .instance($0.id) } ?? .downloads
+        }
+        diagnostics.insert(
+            DiagnosticReport(
+                title: "实例已删除",
+                severity: .info,
+                summary: "\(instance.name) 已移除。",
+                suggestedActions: []
+            ),
+            at: 0
+        )
+    }
+
     var selectedJavaRuntime: JavaRuntime? {
         guard let selectedJavaRuntimeID else { return javaRuntimes.first }
         return javaRuntimes.first { $0.id == selectedJavaRuntimeID } ?? javaRuntimes.first

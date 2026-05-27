@@ -198,6 +198,32 @@ final class LauncherStoreTests: XCTestCase {
         XCTAssertFalse(store.showingCreateSheet)
     }
 
+    func testStoreDeletesInstanceAndUpdatesSelection() {
+        let instanceID = UUID()
+        let instance = LauncherInstance(
+            id: instanceID,
+            name: "待删除",
+            gameVersion: "1.21.5",
+            loader: .vanilla,
+            rootDirectory: URL(fileURLWithPath: "/tmp/mmcl-test-delete-\(UUID())", isDirectory: true),
+            status: .notInstalled
+        )
+        let store = LauncherStore(
+            instances: [instance],
+            downloadJobs: [],
+            featuredProjects: [],
+            diagnostics: [],
+            javaRuntimes: [],
+            availableVersions: []
+        )
+        store.selectedSection = .instance(instanceID)
+
+        store.deleteInstance(instance)
+
+        XCTAssertTrue(store.instances.isEmpty)
+        XCTAssertNil(store.selectedInstance)
+    }
+
     func testStoreInspectsSelectedInstanceAndReportsRepairActions() {
         let instanceID = UUID()
         let instance = LauncherInstance(
