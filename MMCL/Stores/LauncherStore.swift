@@ -30,6 +30,8 @@ final class LauncherStore: ObservableObject {
 
     @Published var modrinthSearchResults: [ModrinthSearchResult] = []
     @Published var modrinthSearchQuery: String = ""
+    @Published var showingModrinthDetail: Bool = false
+    @Published var selectedModrinthProject: ModrinthSearchResult?
 
     private let launchService: LaunchServicing
     private let downloadService: DownloadServicing
@@ -39,7 +41,7 @@ final class LauncherStore: ObservableObject {
     private let fabricService: FabricServicing
     private let quiltService: QuiltServicing
     private let forgeService: ForgeServicing
-    private let modrinthService: ModrinthServicing
+    let modrinthService: ModrinthServicing
 
     init(
         instances: [LauncherInstance] = LauncherStore.sampleInstances,

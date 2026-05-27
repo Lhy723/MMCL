@@ -172,7 +172,7 @@ struct ContentProjectsView: View {
                 ScrollView {
                     LazyVStack(spacing: 10) {
                         ForEach(store.modrinthSearchResults) { result in
-                            ModrinthSearchRow(result: result)
+                            ModrinthSearchRow(result: result, store: store)
                         }
                     }
                 }
@@ -187,42 +187,51 @@ struct ContentProjectsView: View {
 
 private struct ModrinthSearchRow: View {
     let result: ModrinthSearchResult
+    @ObservedObject var store: LauncherStore
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(result.title)
-                        .font(.headline)
-                    Text(result.projectType)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(.quaternary, in: Capsule())
-                }
-                Text(result.description)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                HStack(spacing: 12) {
-                    Label("\(result.downloads)", systemImage: "arrow.down")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    ForEach(result.categories.prefix(3), id: \.self) { category in
-                        Text(category)
+        Button {
+            store.selectedModrinthProject = result
+            store.showingModrinthDetail = true
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(result.title)
+                            .font(.headline)
+                        Text(result.projectType)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(.tertiary, in: Capsule())
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.quaternary, in: Capsule())
+                    }
+                    Text(result.description)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    HStack(spacing: 12) {
+                        Label("\(result.downloads)", systemImage: "arrow.down")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ForEach(result.categories.prefix(3), id: \.self) { category in
+                            Text(category)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(.tertiary, in: Capsule())
+                        }
                     }
                 }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .foregroundStyle(.secondary)
             }
-            Spacer()
+            .padding(12)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
         }
-        .padding(12)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .buttonStyle(.plain)
     }
 }
 

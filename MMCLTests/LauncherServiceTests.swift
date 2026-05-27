@@ -471,6 +471,13 @@ final class LauncherServiceTests: XCTestCase {
         XCTAssertEqual(promos["1.20.1-latest"], "47.3.0")
     }
 
+    func testModrinthVersionRowDisplaysCorrectInfo() throws {
+        let file = ModrinthFile(filename: "mod.jar", url: "https://example.com/mod.jar", size: 1000, primary: true)
+        let version = ModrinthVersion(id: "v1", name: "Mod 1.0", versionNumber: "1.0.0", gameVersions: ["1.21.5"], loaders: ["fabric"], files: [file])
+        XCTAssertEqual(version.files.first?.filename, "mod.jar")
+        XCTAssertEqual(version.loaders, ["fabric"])
+    }
+
     private static let legacyArgumentsMetadataJSON = """
     {
       "id": "1.12.2",

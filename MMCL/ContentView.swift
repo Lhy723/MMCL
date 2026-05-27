@@ -39,6 +39,11 @@ struct ContentView: View {
                 LogViewerSheet(instance: instance, store: store)
             }
         }
+        .sheet(isPresented: $store.showingModrinthDetail) {
+            if let project = store.selectedModrinthProject {
+                ModrinthProjectDetailView(project: project, store: store)
+            }
+        }
     }
 
     @ViewBuilder
