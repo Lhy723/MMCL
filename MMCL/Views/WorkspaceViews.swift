@@ -492,6 +492,12 @@ struct SettingsView: View {
                 if store.updateAvailable, let v = store.latestVersion {
                     Text("新版本可用：\(v)")
                         .foregroundStyle(.blue)
+                    Button {
+                        Task { await store.downloadAndInstallUpdate() }
+                    } label: {
+                        Label(store.isDownloadingUpdate ? "下载中..." : "下载更新", systemImage: "arrow.down.circle.fill")
+                    }
+                    .disabled(store.isDownloadingUpdate || store.updateDownloadURL == nil)
                 }
             }
         }

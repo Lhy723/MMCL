@@ -819,13 +819,71 @@ final class LauncherStore: ObservableObject {
             if version != currentVersion {
                 latestVersion = version
                 updateAvailable = true
+
+                // Find downloadable asset (DMG or ZIP)
+                if let assets = json?["assets"] as? [[String: Any]] {
+                    updateDownloadURL = assets.compactMap { asset -> URL? in
+                        guard let name = asset["name"] as? String,
+                              let browserURL = asset["browser_download_url"] as? String,
+                              name.hasSuffix(".dmg") || name.hasSuffix(".zip"),
+                              let url = URL(string: browserURL) else { return nil }
+                        return url
+                    }.first
+                }
+
                 diagnostics.insert(
-                    DiagnosticReport(title: "发现新版本", severity: .info, summary: "最新版本 \(version)，当前版本 \(currentVersion)。", suggestedActions: ["前往 GitHub 下载最新版本"]),
+                    DiagnosticReport(title: "发现新版本", severity: .info, summary: "最新版本 \(version)，当前版本 \(currentVersion)。", suggestedActions: ["点击「下载更新」获取最新版本"]),
                     at: 0
                 )
             }
         } catch {
             // Silent fail for update check
+        }
+    }
+
+    @Published var updateDownloadURL: URL?
+    @Published var isDownloadingUpdate: Bool = false
+
+    func downloadAndInstallUpdate() async {
+        guard let downloadURL = updateDownloadURL else { return }
+        isDownloadingUpdate = true
+        defer { isDownloadingUpdate = false }
+
+        do {
+            let (tempURL, _) = try await URLSession.shared.download(from: downloadURL)
+            let fileName = downloadURL.lastPathComponent
+            let destURL = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
+
+            if FileManager.default.fileExists(atPath: destURL.path) {
+                try FileManager.default.removeItem(at: destURL)
+            }
+            try FileManager.default.moveItem(at: tempURL, to: destURL)
+
+            // Open the downloaded file (DMG mounts, ZIP opens in Finder)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            process.arguments = [destURL.path]
+            try process.run()
+
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "更新已下载",
+                    severity: .info,
+                    summary: "\(fileName) 已下载到临时目录并打开。请按照提示完成安装。",
+                    suggestedActions: []
+                ),
+                at: 0
+            )
+        } catch {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "更新下载失败",
+                    severity: .error,
+                    summary: error.localizedDescription,
+                    suggestedActions: ["检查网络连接后重试", "前往 GitHub 手动下载"]
+                ),
+                at: 0
+            )
         }
     }
 
