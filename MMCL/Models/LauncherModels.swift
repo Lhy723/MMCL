@@ -1,4 +1,6 @@
+import Combine
 import Foundation
+import SwiftUI
 
 enum GameLoader: String, Codable, CaseIterable, Identifiable {
     case vanilla = "Vanilla"
@@ -448,6 +450,7 @@ struct DownloadJob: Identifiable, Codable, Equatable {
     var sha1: String?
     var totalBytes: Int64
     var completedBytes: Int64
+    var bytesPerSecond: Int64
     var status: DownloadStatus
 
     init(
@@ -459,6 +462,7 @@ struct DownloadJob: Identifiable, Codable, Equatable {
         sha1: String? = nil,
         totalBytes: Int64,
         completedBytes: Int64 = 0,
+        bytesPerSecond: Int64 = 0,
         status: DownloadStatus = .queued
     ) {
         self.id = id
@@ -469,6 +473,7 @@ struct DownloadJob: Identifiable, Codable, Equatable {
         self.sha1 = sha1
         self.totalBytes = totalBytes
         self.completedBytes = completedBytes
+        self.bytesPerSecond = bytesPerSecond
         self.status = status
     }
 
@@ -602,6 +607,17 @@ struct ForgeVersion: Codable, Identifiable, Equatable {
     enum CodingKeys: String, CodingKey {
         case version
         case installerURL = "installer_url"
+    }
+}
+
+struct NeoForgeVersion: Codable, Identifiable, Equatable {
+    var id: String { version }
+    var version: String
+    var neoForgeVersion: String
+
+    enum CodingKeys: String, CodingKey {
+        case version
+        case neoForgeVersion = "neo_version"
     }
 }
 
@@ -784,5 +800,43 @@ extension JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder
+    }
+}
+
+final class DownloadSpeedTracker: ObservableObject {
+    @Published var bytesPerSecond: Int64 = 0
+    private var totalBytes: Int64 = 0
+    private var startTime: Date?
+
+    func addBytes(_ bytes: Int64) {
+        if startTime == nil { startTime = Date() }
+        totalBytes += bytes
+        guard let start = startTime else { return }
+        let elapsed = Date().timeIntervalSince(start)
+        if elapsed > 0 {
+            bytesPerSecond = Int64(Double(totalBytes) / elapsed)
+        }
+    }
+
+    func reset() {
+        totalBytes = 0
+        startTime = nil
+        bytesPerSecond = 0
+    }
+}
+
+enum AppColorScheme: String, CaseIterable, Codable, Identifiable {
+    case system = "跟随系统"
+    case light = "浅色"
+    case dark = "深色"
+
+    var id: String { rawValue }
+
+    var swiftUIScheme: SwiftUI.ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
     }
 }

@@ -8,6 +8,7 @@ struct MMCLApp: App {
         WindowGroup {
             ContentView(store: store)
                 .frame(minWidth: 920, minHeight: 620)
+                .preferredColorScheme(store.colorScheme.swiftUIScheme)
         }
         .commands {
             CommandGroup(after: .newItem) {

@@ -57,6 +57,7 @@ struct DownloadsView: View {
             HStack(spacing: 16) {
                 Label("\(store.downloadJobs.count) 个任务", systemImage: "square.stack.3d.up")
                 Label(totalByteSummary, systemImage: "externaldrive.badge.checkmark")
+                Label(store.speedTracker.bytesPerSecond > 0 ? ByteCountFormatter.string(fromByteCount: store.speedTracker.bytesPerSecond, countStyle: .file) + "/s" : "等待中", systemImage: "speedometer")
             }
             .font(.subheadline)
             .foregroundStyle(.secondary)
@@ -299,6 +300,14 @@ struct SettingsView: View {
                 Picker("首选下载源", selection: $store.preferredDownloadSource) {
                     ForEach(DownloadSource.allCases) { source in
                         Text(source.rawValue).tag(source)
+                    }
+                }
+            }
+
+            Section("外观") {
+                Picker("配色方案", selection: $store.colorScheme) {
+                    ForEach(AppColorScheme.allCases) { scheme in
+                        Text(scheme.rawValue).tag(scheme)
                     }
                 }
             }

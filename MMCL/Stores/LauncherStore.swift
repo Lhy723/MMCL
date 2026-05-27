@@ -41,6 +41,10 @@ final class LauncherStore: ObservableObject {
     @Published var showingModrinthDetail: Bool = false
     @Published var selectedModrinthProject: ModrinthSearchResult?
 
+    @Published var colorScheme: AppColorScheme = .system
+
+    let speedTracker = DownloadSpeedTracker()
+
     private let launchService: LaunchServicing
     private let downloadService: DownloadServicing
     private let versionService: VersionManifestServicing
@@ -49,8 +53,10 @@ final class LauncherStore: ObservableObject {
     private let fabricService: FabricServicing
     private let quiltService: QuiltServicing
     private let forgeService: ForgeServicing
+    private let neoForgeService: NeoForgeServicing
     let modrinthService: ModrinthServicing
     private let authService: AuthServicing
+    private let diagnosticService: DiagnosticServicing
 
     init(
         instances: [LauncherInstance] = LauncherStore.sampleInstances,
@@ -68,8 +74,10 @@ final class LauncherStore: ObservableObject {
         fabricService: FabricServicing = FabricService(),
         quiltService: QuiltServicing = QuiltService(),
         forgeService: ForgeServicing = ForgeService(),
+        neoForgeService: NeoForgeServicing = NeoForgeService(),
         modrinthService: ModrinthServicing = ModrinthService(),
-        authService: AuthServicing = AuthService()
+        authService: AuthServicing = AuthService(),
+        diagnosticService: DiagnosticServicing = DiagnosticService()
     ) {
         self.instances = instances
         self.downloadJobs = downloadJobs
@@ -86,8 +94,10 @@ final class LauncherStore: ObservableObject {
         self.fabricService = fabricService
         self.quiltService = quiltService
         self.forgeService = forgeService
+        self.neoForgeService = neoForgeService
         self.modrinthService = modrinthService
         self.authService = authService
+        self.diagnosticService = diagnosticService
         self.selectedJavaRuntimeID = javaRuntimes.first?.id
         self.selectedSection = instances.first.map { .instance($0.id) } ?? .downloads
     }
@@ -671,6 +681,32 @@ final class LauncherStore: ObservableObject {
         }
     }
 
+    func installNeoForgeLoader(for instance: LauncherInstance) async {
+        do {
+            let metadata = try await neoForgeService.installNeoForge(gameVersion: instance.gameVersion, version: nil, instance: instance)
+            plannedVersionMetadata = metadata
+            plannedInstanceID = instance.id
+            let jobs = downloadService.makeVanillaInstallJobs(metadata: metadata, instance: instance, source: selectedDownloadSource)
+            downloadJobs = jobs
+            updateInstanceStatus(instance.id, status: .missingFiles)
+            diagnostics.insert(DiagnosticReport(title: "NeoForge 已安装", severity: .info, summary: "已为 \(instance.name) 安装 NeoForge，生成 \(jobs.count) 个下载任务。", suggestedActions: ["打开下载中心执行任务"]), at: 0)
+            selectedSection = .downloads
+        } catch {
+            diagnostics.insert(DiagnosticReport(title: "NeoForge 安装失败", severity: .error, summary: error.localizedDescription, suggestedActions: ["确认已安装基础版本", "检查网络连接"]), at: 0)
+        }
+    }
+
+    func analyzeCrash(for instance: LauncherInstance) {
+        if let report = diagnosticService.analyzeLatestCrash(instance: instance) {
+            diagnostics.insert(report, at: 0)
+        } else {
+            diagnostics.insert(
+                DiagnosticReport(title: "未发现崩溃", severity: .info, summary: "最近日志中没有找到崩溃报告。", suggestedActions: []),
+                at: 0
+            )
+        }
+    }
+
     func refreshAvailableVersions() async {
         do {
             let manifest = try await versionService.fetchManifest(from: nil)
@@ -837,6 +873,8 @@ final class LauncherStore: ObservableObject {
         let queuedIndices = downloadJobs.indices.filter { downloadJobs[$0].status == .queued }
         guard !queuedIndices.isEmpty else { return }
 
+        speedTracker.reset()
+
         for index in queuedIndices {
             downloadJobs[index].status = .running
         }
@@ -872,6 +910,9 @@ final class LauncherStore: ObservableObject {
                 activeTasks -= 1
                 if let result {
                     downloadJobs[index] = result
+                    if result.status == .completed {
+                        speedTracker.addBytes(result.totalBytes)
+                    }
                     if result.status == .failed {
                         diagnostics.insert(
                             DiagnosticReport(

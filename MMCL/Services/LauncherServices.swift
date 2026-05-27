@@ -1094,8 +1094,72 @@ enum ForgeInstallError: LocalizedError, Equatable {
     }
 }
 
+protocol NeoForgeServicing {
+    func fetchVersions(gameVersion: String) async throws -> [NeoForgeVersion]
+    func installNeoForge(gameVersion: String, version: String?, instance: LauncherInstance) async throws -> VersionMetadata
+}
+
+struct NeoForgeService: NeoForgeServicing {
+    let baseURL = URL(string: "https://maven.neoforged.net/releases/net/neoforged/neoforge")!
+
+    func fetchVersions(gameVersion: String) async throws -> [NeoForgeVersion] {
+        let url = URL(string: "https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge")!
+        let (data, _) = try await URLSession.shared.data(from: url)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let versions = json?["versions"] as? [String] ?? []
+        return versions
+            .filter { $0.hasPrefix(gameVersion + ".") }
+            .map { NeoForgeVersion(version: $0, neoForgeVersion: $0.replacingOccurrences(of: "\(gameVersion).", with: "")) }
+    }
+
+    func installNeoForge(gameVersion: String, version: String? = nil, instance: LauncherInstance) async throws -> VersionMetadata {
+        let versions = try await fetchVersions(gameVersion: gameVersion)
+        guard let selected = versions.first else {
+            throw NeoForgeInstallError.noVersionAvailable(gameVersion)
+        }
+
+        let baseMetadata = try readBaseMetadata(instance: instance, gameVersion: gameVersion)
+        var metadata = baseMetadata
+        metadata.id = "\(gameVersion)-neoforge-\(selected.version)"
+
+        let versionDir = instance.rootDirectory
+            .appendingPathComponent(".minecraft", isDirectory: true)
+            .appendingPathComponent("versions", isDirectory: true)
+            .appendingPathComponent(metadata.id, isDirectory: true)
+        try FileManager.default.createDirectory(at: versionDir, withIntermediateDirectories: true)
+        try JSONEncoder.mmcl.encode(metadata).write(to: versionDir.appendingPathComponent("\(metadata.id).json"), options: .atomic)
+
+        return metadata
+    }
+
+    private func readBaseMetadata(instance: LauncherInstance, gameVersion: String) throws -> VersionMetadata {
+        let metadataURL = instance.rootDirectory
+            .appendingPathComponent(".minecraft", isDirectory: true)
+            .appendingPathComponent("versions", isDirectory: true)
+            .appendingPathComponent(gameVersion, isDirectory: true)
+            .appendingPathComponent("\(gameVersion).json")
+        guard let data = try? Data(contentsOf: metadataURL) else {
+            throw NeoForgeInstallError.baseMetadataNotFound(gameVersion)
+        }
+        return try JSONDecoder.mmcl.decode(VersionMetadata.self, from: data)
+    }
+}
+
+enum NeoForgeInstallError: LocalizedError, Equatable {
+    case noVersionAvailable(String)
+    case baseMetadataNotFound(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .noVersionAvailable(let v): return "没有可用的 NeoForge 版本：Minecraft \(v)"
+        case .baseMetadataNotFound(let v): return "缺少基础版本元数据：\(v)。请先安装原版 \(v)。"
+        }
+    }
+}
+
 protocol DiagnosticServicing {
     func javaMismatch(instance: LauncherInstance, runtime: JavaRuntime) -> DiagnosticReport?
+    func analyzeLatestCrash(instance: LauncherInstance) -> DiagnosticReport?
 }
 
 struct DiagnosticService: DiagnosticServicing {
@@ -1107,6 +1171,49 @@ struct DiagnosticService: DiagnosticServicing {
             severity: .warning,
             summary: "实例 \(instance.name) 推荐使用 Java \(required)，当前选择的是 Java \(runtime.majorVersion)。",
             suggestedActions: ["安装 Java \(required) 或更高版本", "在实例设置中重新选择 Java 运行时"]
+        )
+    }
+
+    func analyzeLatestCrash(instance: LauncherInstance) -> DiagnosticReport? {
+        let logURL = instance.rootDirectory.appendingPathComponent("logs/latest.log")
+        guard let data = try? Data(contentsOf: logURL),
+              let content = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+
+        let lines = content.components(separatedBy: .newlines)
+        var crashLines: [String] = []
+        var inCrash = false
+
+        for line in lines {
+            if line.contains("---- Minecraft Crash Report ----") || line.contains("java.lang.") && line.contains("Exception") {
+                inCrash = true
+            }
+            if inCrash {
+                crashLines.append(line)
+                if crashLines.count > 50 { break }
+            }
+        }
+
+        guard !crashLines.isEmpty else { return nil }
+
+        let crashContent = crashLines.joined(separator: "\n")
+        let summary: String
+        if crashContent.contains("OutOfMemoryError") {
+            summary = "内存不足。建议增加分配内存。"
+        } else if crashContent.contains("ClassNotFound") || crashContent.contains("NoClassDefFoundError") {
+            summary = "缺少依赖类。可能是 mod 版本不兼容或 loader 安装不完整。"
+        } else if crashContent.contains("NoSuchMethod") {
+            summary = "方法不存在。可能是 mod 与游戏版本不兼容。"
+        } else {
+            summary = "游戏崩溃，前 50 行日志已捕获。"
+        }
+
+        return DiagnosticReport(
+            title: "游戏崩溃",
+            severity: .error,
+            summary: summary,
+            suggestedActions: ["检查 mod 兼容性", "尝试移除最近安装的 mod", "查看完整崩溃日志"]
         )
     }
 }

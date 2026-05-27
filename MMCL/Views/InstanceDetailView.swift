@@ -175,6 +175,12 @@ struct InstanceDetailView: View {
                     Label("资源包", systemImage: "photo")
                 }
 
+                Button {
+                    store.analyzeCrash(for: instance)
+                } label: {
+                    Label("崩溃分析", systemImage: "exclamationmark.triangle")
+                }
+
                 if instance.loader == .fabric {
                     Button {
                         Task {
@@ -198,6 +204,11 @@ struct InstanceDetailView: View {
                         Task { await store.installForgeLoader(for: instance) }
                     } label: {
                         Label("安装 Forge", systemImage: "hammer")
+                    }
+                    Button {
+                        Task { await store.installNeoForgeLoader(for: instance) }
+                    } label: {
+                        Label("安装 NeoForge", systemImage: "hammer.fill")
                     }
                 }
             }
