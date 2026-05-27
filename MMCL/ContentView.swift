@@ -1,83 +1,78 @@
-//
-//  ContentView.swift
-//  MMCL
-//
-//  Created by 星音 on 2026/5/27.
-//
-
 import SwiftUI
-import CoreData
 
 struct ContentView: View {
-    @Environment(\.managedObjectContext) private var viewContext
-
-    @FetchRequest(
-        sortDescriptors: [NSSortDescriptor(keyPath: \Item.timestamp, ascending: true)],
-        animation: .default)
-    private var items: FetchedResults<Item>
+    @ObservedObject var store: LauncherStore
 
     var body: some View {
-        NavigationView {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp!, formatter: itemFormatter)")
-                    } label: {
-                        Text(item.timestamp!, formatter: itemFormatter)
-                    }
+        NavigationSplitView {
+            SidebarView(store: store)
+        } detail: {
+            detailView
+        }
+        .toolbar {
+            ToolbarItemGroup {
+                Button {
+                    store.showingCreateSheet = true
+                } label: {
+                    Label("新增实例", systemImage: "plus")
                 }
-                .onDelete(perform: deleteItems)
-            }
-            .toolbar {
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
-                    }
+                .help("新增实例")
+
+                Button {
+                    store.launchSelectedInstance()
+                } label: {
+                    Label("启动", systemImage: "play.fill")
                 }
+                .buttonStyle(.borderedProminent)
+                .disabled(store.selectedInstance == nil || store.selectedJavaRuntime == nil)
+                .help("启动选中的实例")
             }
-            Text("Select an item")
+        }
+        .onAppear {
+            store.selectFirstInstanceIfNeeded()
+        }
+        .sheet(isPresented: $store.showingCreateSheet) {
+            InstanceCreateSheet(store: store)
+        }
+        .sheet(isPresented: $store.showingLogSheet) {
+            if let instance = store.selectedInstance {
+                LogViewerSheet(instance: instance, store: store)
+            }
         }
     }
 
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(context: viewContext)
-            newItem.timestamp = Date()
-
-            do {
-                try viewContext.save()
-            } catch {
-                // Replace this implementation with code to handle the error appropriately.
-                // fatalError() causes the application to generate a crash log and terminate. You should not use this function in a shipping application, although it may be useful during development.
-                let nsError = error as NSError
-                fatalError("Unresolved error \(nsError), \(nsError.userInfo)")
+    @ViewBuilder
+    private var detailView: some View {
+        switch store.selectedSection {
+        case .instance:
+            if let instance = store.selectedInstance {
+                InstanceDetailView(instance: instance, store: store)
+            } else {
+                EmptyStateView(title: "未选择实例", message: "从侧边栏选择一个 Minecraft 实例。", systemImage: "cube.box")
             }
-        }
-    }
-
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            offsets.map { items[$0] }.forEach(viewContext.delete)
-
-            do {
-                try viewContext.save()
-            } catch {
-                // Replace this implementation with code to handle the error appropriately.
-                // fatalError() causes the application to generate a crash log and terminate. You should not use this function in a shipping application, although it may be useful during development.
-                let nsError = error as NSError
-                fatalError("Unresolved error \(nsError), \(nsError.userInfo)")
-            }
+        case .downloads:
+            DownloadsView(store: store)
+        case .content:
+            ContentProjectsView(store: store)
+        case .diagnostics:
+            DiagnosticsView(store: store)
+        case .none:
+            EmptyStateView(title: "欢迎使用 MMCL", message: "选择实例、下载中心或诊断日志开始。", systemImage: "gamecontroller")
         }
     }
 }
 
-private let itemFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateStyle = .short
-    formatter.timeStyle = .medium
-    return formatter
-}()
+private struct EmptyStateView: View {
+    let title: String
+    let message: String
+    let systemImage: String
+
+    var body: some View {
+        ContentUnavailableView(title, systemImage: systemImage, description: Text(message))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
 
 #Preview {
-    ContentView().environment(\.managedObjectContext, PersistenceController.preview.container.viewContext)
+    ContentView(store: LauncherStore())
 }

@@ -1,21 +1,25 @@
-//
-//  MMCLApp.swift
-//  MMCL
-//
-//  Created by 星音 on 2026/5/27.
-//
-
 import SwiftUI
-import CoreData
 
 @main
 struct MMCLApp: App {
-    let persistenceController = PersistenceController.shared
+    @StateObject private var store = LauncherStore()
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environment(\.managedObjectContext, persistenceController.container.viewContext)
+            ContentView(store: store)
+                .frame(minWidth: 920, minHeight: 620)
+        }
+        .commands {
+            CommandGroup(after: .newItem) {
+                Button("新增实例") {
+                    store.showingCreateSheet = true
+                }
+                .keyboardShortcut("n", modifiers: [.command])
+            }
+        }
+
+        Settings {
+            SettingsView(store: store)
         }
     }
 }
