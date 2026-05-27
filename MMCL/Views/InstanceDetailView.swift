@@ -176,6 +176,12 @@ struct InstanceDetailView: View {
                 }
 
                 Button {
+                    store.showingShaderPacks = true
+                } label: {
+                    Label("管理光影", systemImage: "sun.max")
+                }
+
+                Button {
                     store.analyzeCrash(for: instance)
                 } label: {
                     Label("崩溃分析", systemImage: "exclamationmark.triangle")

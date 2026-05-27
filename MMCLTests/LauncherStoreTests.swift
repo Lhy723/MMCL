@@ -10,7 +10,7 @@ final class LauncherStoreTests: XCTestCase {
             gameVersion: "1.21.5",
             loader: .vanilla,
             rootDirectory: URL(fileURLWithPath: "/Users/example/Instances/vanilla", isDirectory: true),
-            profile: LaunchProfile(offlineUsername: "Steve", memoryMegabytes: 4096, jvmArguments: []),
+            profile: LaunchProfile(offlineUsername: "Steve", memoryMegabytes: 4096, jvmArguments: [], resolutionWidth: 854, resolutionHeight: 480),
             status: .ready
         )
         let runtime = JavaRuntime(

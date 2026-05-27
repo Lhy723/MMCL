@@ -2,6 +2,7 @@ import SwiftUI
 
 struct DownloadsView: View {
     @ObservedObject var store: LauncherStore
+    @State private var versionFilter: MinecraftVersion.ReleaseType? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -64,17 +65,29 @@ struct DownloadsView: View {
 
             DetailSection(title: "可用版本", systemImage: "list.bullet.rectangle") {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(store.availableVersions) { version in
-                        HStack {
-                            Text(version.id)
-                                .font(.headline)
-                            Text(version.type.label)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Text("推荐 Java \(version.recommendedJavaMajorVersion)")
-                                .foregroundStyle(.secondary)
+                    Picker("类型", selection: $versionFilter) {
+                        Text("全部").tag(MinecraftVersion.ReleaseType?.none)
+                        ForEach([MinecraftVersion.ReleaseType.release, .snapshot, .oldBeta, .oldAlpha], id: \.self) { type in
+                            Text(type.label).tag(Optional(type))
                         }
                     }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 400)
+
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 4) {
+                            ForEach(filteredVersions) { version in
+                                HStack {
+                                    Text(version.id).font(.headline)
+                                    Text(version.type.label).foregroundStyle(.secondary)
+                                    Spacer()
+                                    Text("推荐 Java \(version.recommendedJavaMajorVersion)").foregroundStyle(.secondary)
+                                }
+                                .padding(.vertical, 2)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 200)
                 }
             }
 
@@ -92,6 +105,13 @@ struct DownloadsView: View {
         let totalBytes = store.downloadJobs.reduce(Int64(0)) { $0 + $1.totalBytes }
         guard totalBytes > 0 else { return "总计 0 字节" }
         return ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+    }
+
+    private var filteredVersions: [MinecraftVersion] {
+        if let filter = versionFilter {
+            return store.availableVersions.filter { $0.type == filter }
+        }
+        return store.availableVersions
     }
 
     private var header: some View {
@@ -353,10 +373,46 @@ struct SettingsView: View {
                 Stepper("默认内存：\(store.defaultMemoryMegabytes) MB", value: $store.defaultMemoryMegabytes, in: 1024...16384, step: 512)
             }
 
+            Section("显示") {
+                HStack {
+                    Text("默认分辨率")
+                    Spacer()
+                    Stepper("\(store.defaultResolutionWidth)x\(store.defaultResolutionHeight)", value: $store.defaultResolutionWidth, in: 640...3840, step: 32)
+                }
+            }
+
             Section("下载") {
                 Picker("首选下载源", selection: $store.preferredDownloadSource) {
                     ForEach(DownloadSource.allCases) { source in
                         Text(source.rawValue).tag(source)
+                    }
+                }
+            }
+
+            Section("语言") {
+                Picker("界面语言", selection: $store.appLanguage) {
+                    ForEach(AppLanguage.allCases) { lang in
+                        Text(lang.rawValue).tag(lang)
+                    }
+                }
+            }
+
+            Section("JVM 预设") {
+                ForEach(store.jvmPresets) { preset in
+                    HStack {
+                        Toggle(preset.name, isOn: Binding(
+                            get: { preset.isEnabled },
+                            set: { newValue in
+                                if let idx = store.jvmPresets.firstIndex(where: { $0.id == preset.id }) {
+                                    store.jvmPresets[idx].isEnabled = newValue
+                                }
+                            }
+                        ))
+                        Spacer()
+                        Text(preset.arguments.joined(separator: " "))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
             }
@@ -426,6 +482,6 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding(20)
-        .frame(width: 520, height: 320)
+        .frame(width: 520, height: 420)
     }
 }

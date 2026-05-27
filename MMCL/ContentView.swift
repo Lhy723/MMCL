@@ -67,6 +67,11 @@ struct ContentView: View {
                 ResourcePackListView(instance: instance, store: store)
             }
         }
+        .sheet(isPresented: $store.showingShaderPacks) {
+            if let instance = store.selectedInstance {
+                ShaderPackListView(instance: instance, store: store)
+            }
+        }
     }
 
     @ViewBuilder

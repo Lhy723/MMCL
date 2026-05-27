@@ -67,7 +67,7 @@ final class LauncherServiceTests: XCTestCase {
             gameVersion: "1.21.5",
             loader: .vanilla,
             rootDirectory: URL(fileURLWithPath: "/Users/example/Instances/vanilla", isDirectory: true),
-            profile: LaunchProfile(offlineUsername: "Steve", memoryMegabytes: 4096, jvmArguments: ["-XX:+UseG1GC"]),
+            profile: LaunchProfile(offlineUsername: "Steve", memoryMegabytes: 4096, jvmArguments: ["-XX:+UseG1GC"], resolutionWidth: 854, resolutionHeight: 480),
             status: .ready
         )
         let java = JavaRuntime(
@@ -100,7 +100,7 @@ final class LauncherServiceTests: XCTestCase {
             gameVersion: "1.21.5",
             loader: .vanilla,
             rootDirectory: root,
-            profile: LaunchProfile(offlineUsername: "Steve", memoryMegabytes: 4096, jvmArguments: []),
+            profile: LaunchProfile(offlineUsername: "Steve", memoryMegabytes: 4096, jvmArguments: [], resolutionWidth: 854, resolutionHeight: 480),
             status: .ready
         )
         let metadata = try VersionManifestService().decodeVersionMetadata(from: Data(Self.versionMetadataJSON.utf8))
@@ -132,7 +132,7 @@ final class LauncherServiceTests: XCTestCase {
             gameVersion: "1.21.5",
             loader: .vanilla,
             rootDirectory: root,
-            profile: LaunchProfile(offlineUsername: "Steve", memoryMegabytes: 4096, jvmArguments: ["-XX:+UseG1GC"]),
+            profile: LaunchProfile(offlineUsername: "Steve", memoryMegabytes: 4096, jvmArguments: ["-XX:+UseG1GC"], resolutionWidth: 854, resolutionHeight: 480),
             status: .ready
         )
         let metadata = try VersionManifestService().decodeVersionMetadata(from: Data(Self.modernArgumentsMetadataJSON.utf8))
@@ -170,7 +170,7 @@ final class LauncherServiceTests: XCTestCase {
             gameVersion: "1.12.2",
             loader: .vanilla,
             rootDirectory: root,
-            profile: LaunchProfile(offlineUsername: "Alex", memoryMegabytes: 2048, jvmArguments: []),
+            profile: LaunchProfile(offlineUsername: "Alex", memoryMegabytes: 2048, jvmArguments: [], resolutionWidth: 854, resolutionHeight: 480),
             status: .ready
         )
         let metadata = try VersionManifestService().decodeVersionMetadata(from: Data(Self.legacyArgumentsMetadataJSON.utf8))
@@ -267,7 +267,7 @@ final class LauncherServiceTests: XCTestCase {
             gameVersion: "1.21.5",
             loader: .vanilla,
             rootDirectory: root,
-            profile: LaunchProfile(offlineUsername: "Steve", memoryMegabytes: 512, jvmArguments: []),
+            profile: LaunchProfile(offlineUsername: "Steve", memoryMegabytes: 512, jvmArguments: [], resolutionWidth: 854, resolutionHeight: 480),
             status: .ready
         )
         let java = JavaRuntime(

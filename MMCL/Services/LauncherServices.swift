@@ -702,8 +702,8 @@ struct LaunchService: LaunchServicing {
             "launcher_name": "MMCL",
             "launcher_version": "0.1",
             "classpath": classpath,
-            "resolution_width": "854",
-            "resolution_height": "480"
+            "resolution_width": String(instance.profile.resolutionWidth),
+            "resolution_height": String(instance.profile.resolutionHeight)
         ]
     }
 

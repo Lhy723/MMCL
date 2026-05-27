@@ -25,12 +25,15 @@ final class LauncherStore: ObservableObject {
 
     @Published var defaultMemoryMegabytes: Int = 4096
     @Published var defaultOfflineUsername: String = "Steve"
+    @Published var defaultResolutionWidth: Int = 854
+    @Published var defaultResolutionHeight: Int = 480
     @Published var preferredDownloadSource: DownloadSource = .bmclapi
     @Published var showingCreateSheet: Bool = false
     @Published var showingLogSheet: Bool = false
     @Published var showingRenameSheet: Bool = false
     @Published var showingModList: Bool = false
     @Published var showingResourcePacks: Bool = false
+    @Published var showingShaderPacks: Bool = false
 
     @Published var accounts: [MinecraftAccount] = []
     @Published var selectedAccountID: MinecraftAccount.ID?
@@ -50,6 +53,8 @@ final class LauncherStore: ObservableObject {
     @Published var updateAvailable = false
 
     @Published var colorScheme: AppColorScheme = .system
+    @Published var appLanguage: AppLanguage = .chinese
+    @Published var jvmPresets: [JVMPreset] = JVMPreset.defaults
 
     let speedTracker = DownloadSpeedTracker()
 
@@ -204,7 +209,9 @@ final class LauncherStore: ObservableObject {
         let profile = LaunchProfile(
             offlineUsername: username ?? defaultOfflineUsername,
             memoryMegabytes: memory ?? defaultMemoryMegabytes,
-            jvmArguments: jvmArgs
+            jvmArguments: jvmArgs,
+            resolutionWidth: defaultResolutionWidth,
+            resolutionHeight: defaultResolutionHeight
         )
         do {
             let instance = try instanceService.createInstance(
@@ -300,7 +307,9 @@ final class LauncherStore: ObservableObject {
         let profile = LaunchProfile(
             offlineUsername: instance.profile.offlineUsername,
             memoryMegabytes: instance.profile.memoryMegabytes,
-            jvmArguments: instance.profile.jvmArguments
+            jvmArguments: instance.profile.jvmArguments,
+            resolutionWidth: instance.profile.resolutionWidth,
+            resolutionHeight: instance.profile.resolutionHeight
         )
         do {
             let copy = try instanceService.createInstance(
@@ -367,6 +376,24 @@ final class LauncherStore: ObservableObject {
 
     func deleteResourcePack(for instance: LauncherInstance, pack: ResourcePackInfo) {
         let dir = instance.rootDirectory.appendingPathComponent(".minecraft/resourcepacks", isDirectory: true)
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent(pack.fileName))
+    }
+
+    func scanShaderPacks(for instance: LauncherInstance) -> [ShaderPackInfo] {
+        let dir = instance.rootDirectory.appendingPathComponent(".minecraft/shaderpacks", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey]) else { return [] }
+        return files
+            .filter { $0.pathExtension == "zip" || $0.pathExtension == "jar" }
+            .map { url in
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                return ShaderPackInfo(fileName: url.lastPathComponent, isEnabled: true, size: Int64(size))
+            }
+            .sorted { $0.fileName < $1.fileName }
+    }
+
+    func deleteShaderPack(for instance: LauncherInstance, pack: ShaderPackInfo) {
+        let dir = instance.rootDirectory.appendingPathComponent(".minecraft/shaderpacks", isDirectory: true)
         try? FileManager.default.removeItem(at: dir.appendingPathComponent(pack.fileName))
     }
 
@@ -1174,7 +1201,7 @@ extension LauncherStore {
                 gameVersion: "1.21.5",
                 loader: .vanilla,
                 rootDirectory: base.appendingPathComponent("vanilla-survival"),
-                profile: LaunchProfile(offlineUsername: "Steve", memoryMegabytes: 4096, jvmArguments: ["-XX:+UseG1GC"]),
+                profile: LaunchProfile(offlineUsername: "Steve", memoryMegabytes: 4096, jvmArguments: ["-XX:+UseG1GC"], resolutionWidth: 854, resolutionHeight: 480),
                 status: .ready,
                 lastPlayedAt: Date(timeIntervalSinceNow: -3600)
             ),
@@ -1183,7 +1210,7 @@ extension LauncherStore {
                 gameVersion: "1.20.1",
                 loader: .fabric,
                 rootDirectory: base.appendingPathComponent("fabric-tech"),
-                profile: LaunchProfile(offlineUsername: "Alex", memoryMegabytes: 6144, jvmArguments: ["-XX:+UseG1GC", "-Dfml.ignoreInvalidMinecraftCertificates=true"]),
+                profile: LaunchProfile(offlineUsername: "Alex", memoryMegabytes: 6144, jvmArguments: ["-XX:+UseG1GC", "-Dfml.ignoreInvalidMinecraftCertificates=true"], resolutionWidth: 854, resolutionHeight: 480),
                 status: .missingFiles,
                 lastPlayedAt: Date(timeIntervalSinceNow: -86_400)
             ),
@@ -1192,7 +1219,7 @@ extension LauncherStore {
                 gameVersion: "25w21a",
                 loader: .vanilla,
                 rootDirectory: base.appendingPathComponent("snapshot-lab"),
-                profile: LaunchProfile(offlineUsername: "Tester", memoryMegabytes: 3072, jvmArguments: []),
+                profile: LaunchProfile(offlineUsername: "Tester", memoryMegabytes: 3072, jvmArguments: [], resolutionWidth: 854, resolutionHeight: 480),
                 status: .needsJava,
                 lastPlayedAt: nil
             )

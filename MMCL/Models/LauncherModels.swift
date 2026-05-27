@@ -31,11 +31,15 @@ struct LaunchProfile: Codable, Equatable {
     var offlineUsername: String
     var memoryMegabytes: Int
     var jvmArguments: [String]
+    var resolutionWidth: Int
+    var resolutionHeight: Int
 
     static let `default` = LaunchProfile(
         offlineUsername: "Steve",
         memoryMegabytes: 4096,
-        jvmArguments: ["-XX:+UseG1GC", "-XX:+UnlockExperimentalVMOptions"]
+        jvmArguments: ["-XX:+UseG1GC", "-XX:+UnlockExperimentalVMOptions"],
+        resolutionWidth: 854,
+        resolutionHeight: 480
     )
 }
 
@@ -502,6 +506,13 @@ struct ResourcePackInfo: Identifiable, Equatable {
     var size: Int64
 }
 
+struct ShaderPackInfo: Identifiable, Equatable {
+    var id: String { fileName }
+    var fileName: String
+    var isEnabled: Bool
+    var size: Int64
+}
+
 struct ContentProject: Identifiable, Codable, Equatable {
     enum ProjectType: String, Codable {
         case mod = "Mod"
@@ -857,4 +868,25 @@ enum AppColorScheme: String, CaseIterable, Codable, Identifiable {
         case .dark: return .dark
         }
     }
+}
+
+enum AppLanguage: String, CaseIterable, Codable, Identifiable {
+    case chinese = "中文"
+    case english = "English"
+
+    var id: String { rawValue }
+}
+
+struct JVMPreset: Identifiable, Codable, Equatable {
+    var id: UUID
+    var name: String
+    var arguments: [String]
+    var isEnabled: Bool
+
+    static let defaults = [
+        JVMPreset(id: UUID(), name: "G1GC（推荐）", arguments: ["-XX:+UseG1GC", "-XX:+UnlockExperimentalVMOptions"], isEnabled: true),
+        JVMPreset(id: UUID(), name: "ZGC（低延迟）", arguments: ["-XX:+UseZGC", "-XX:+ZGenerational"], isEnabled: false),
+        JVMPreset(id: UUID(), name: "性能优化", arguments: ["-XX:+UseG1GC", "-XX:+UnlockExperimentalVMOptions", "-XX:G1HeapRegionSize=16M", "-XX:+OptimizeStringConcat"], isEnabled: false),
+        JVMPreset(id: UUID(), name: "大内存", arguments: ["-XX:+UseG1GC", "-XX:MaxGCPauseMillis=20", "-XX:+UnlockExperimentalVMOptions", "-XX:G1NewSizePercent=30", "-XX:G1MaxNewSizePercent=40"], isEnabled: false),
+    ]
 }
