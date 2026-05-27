@@ -302,6 +302,46 @@ struct SettingsView: View {
                     }
                 }
             }
+
+            Section("账号") {
+                ForEach(store.accounts) { account in
+                    HStack {
+                        Text(account.displayName)
+                        Spacer()
+                        Text(account.type == .microsoft ? "在线" : "离线")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button(role: .destructive) {
+                            store.deleteAccount(account)
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                Button("添加离线账号") {
+                    store.addOfflineAccount(username: store.defaultOfflineUsername)
+                }
+
+                Button {
+                    Task { await store.startMicrosoftLogin() }
+                } label: {
+                    if store.isLoggingIn {
+                        ProgressView()
+                    } else {
+                        Label("Microsoft 登录", systemImage: "person.crop.circle.badge.checkmark")
+                    }
+                }
+                .disabled(store.isLoggingIn)
+
+                if !store.deviceCodeMessage.isEmpty {
+                    Text(store.deviceCodeMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
         }
         .formStyle(.grouped)
         .padding(20)

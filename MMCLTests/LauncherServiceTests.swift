@@ -500,6 +500,21 @@ final class LauncherServiceTests: XCTestCase {
       "minecraftArguments": "--username ${auth_player_name} --version ${version_name} --gameDir ${game_directory} --assetsDir ${assets_root} --assetIndex ${assets_index_name} --accessToken ${auth_access_token} --userType ${user_type}"
     }
     """
+
+    func testMinecraftAccountDisplayNames() {
+        let offline = MinecraftAccount(username: "Steve", type: .offline)
+        let online = MinecraftAccount(username: "Notch", uuid: "abc", accessToken: "token", refreshToken: "refresh", type: .microsoft)
+        XCTAssertEqual(offline.displayName, "Steve（离线）")
+        XCTAssertEqual(online.displayName, "Notch")
+    }
+
+    func testMinecraftAccountRoundTripsThroughJSON() throws {
+        let account = MinecraftAccount(username: "Test", uuid: "uuid-123", accessToken: "at", refreshToken: "rt", expiresAt: Date(timeIntervalSince1970: 1000), type: .microsoft)
+        let data = try JSONEncoder.mmcl.encode(account)
+        let decoded = try JSONDecoder.mmcl.decode(MinecraftAccount.self, from: data)
+        XCTAssertEqual(decoded.username, "Test")
+        XCTAssertEqual(decoded.type, .microsoft)
+    }
 }
 
 private extension Array where Element == String {

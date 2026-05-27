@@ -1110,3 +1110,154 @@ struct DiagnosticService: DiagnosticServicing {
         )
     }
 }
+
+protocol AuthServicing {
+    func startDeviceCodeFlow() async throws -> DeviceCodeResponse
+    func pollForToken(deviceCode: String, interval: Int) async throws -> MicrosoftTokenResponse
+    func exchangeForXBLToken(accessToken: String) async throws -> XboxTokenResponse
+    func exchangeForXSTSToken(xblToken: String) async throws -> XBLXSTSResponse
+    func exchangeForMinecraftToken(xstsToken: String) async throws -> MinecraftTokenResponse
+    func fetchMinecraftProfile(accessToken: String) async throws -> MinecraftProfileResponse
+    func refreshMicrosoftToken(refreshToken: String) async throws -> MicrosoftTokenResponse
+}
+
+struct AuthService: AuthServicing {
+    let clientID = "16d660be-3984-44b0-a834-44be4a89d609"
+
+    func startDeviceCodeFlow() async throws -> DeviceCodeResponse {
+        let url = URL(string: "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = "client_id=\(clientID)&scope=XboxLive.signin offline_access".data(using: .utf8)
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return try JSONDecoder().decode(DeviceCodeResponse.self, from: data)
+    }
+
+    func pollForToken(deviceCode: String, interval: Int = 5) async throws -> MicrosoftTokenResponse {
+        let url = URL(string: "https://login.microsoftonline.com/consumers/oauth2/v2.0/token")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = "client_id=\(clientID)&grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=\(deviceCode)".data(using: .utf8)
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+
+        while true {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let httpResponse = response as! HTTPURLResponse
+
+            if httpResponse.statusCode == 200 {
+                return try JSONDecoder().decode(MicrosoftTokenResponse.self, from: data)
+            }
+
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: String]
+            let error = json?["error"] ?? ""
+
+            if error == "authorization_pending" {
+                try await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
+                continue
+            } else if error == "authorization_declined" {
+                throw AuthError.userDeclined
+            } else if error == "expired_token" {
+                throw AuthError.codeExpired
+            } else {
+                throw AuthError.tokenExchangeFailed(json?["error_description"] ?? error)
+            }
+        }
+    }
+
+    func exchangeForXBLToken(accessToken: String) async throws -> XboxTokenResponse {
+        let url = URL(string: "https://user.auth.xboxlive.com/user/authenticate")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        let body: [String: Any] = [
+            "Properties": [
+                "AuthMethod": "RPS",
+                "SiteName": "user.auth.xboxlive.com",
+                "RpsTicket": accessToken
+            ],
+            "RelyingParty": "http://auth.xboxlive.com",
+            "TokenType": "JWT"
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let token = json["Token"] as! String
+        let expiresIn = (json["IssueAfter"] as? Int) ?? 3600
+        return XboxTokenResponse(token: token, expiresInSeconds: expiresIn)
+    }
+
+    func exchangeForXSTSToken(xblToken: String) async throws -> XBLXSTSResponse {
+        let url = URL(string: "https://xsts.auth.xboxlive.com/xsts/authorize")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        let body: [String: Any] = [
+            "Properties": [
+                "SandboxId": "RETAIL",
+                "UserTokens": [xblToken]
+            ],
+            "RelyingParty": "rp://api.minecraftservices.com/",
+            "TokenType": "JWT"
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        if let token = json["Token"] as? String {
+            return XBLXSTSResponse(token: token, expiresInSeconds: 3600)
+        }
+        let error = json["XErr"] as? Int ?? 0
+        throw AuthError.xstsAuthFailed(error)
+    }
+
+    func exchangeForMinecraftToken(xstsToken: String) async throws -> MinecraftTokenResponse {
+        let url = URL(string: "https://api.minecraftservices.com/authentication/login_with_xbox")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        let body = ["identityToken": "XBL3.0 x=\(xstsToken)"]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return try JSONDecoder().decode(MinecraftTokenResponse.self, from: data)
+    }
+
+    func fetchMinecraftProfile(accessToken: String) async throws -> MinecraftProfileResponse {
+        let url = URL(string: "https://api.minecraftservices.com/minecraft/profile")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let httpResponse = response as! HTTPURLResponse
+        guard httpResponse.statusCode == 200 else {
+            throw AuthError.noMinecraftProfile
+        }
+        return try JSONDecoder().decode(MinecraftProfileResponse.self, from: data)
+    }
+
+    func refreshMicrosoftToken(refreshToken: String) async throws -> MicrosoftTokenResponse {
+        let url = URL(string: "https://login.microsoftonline.com/consumers/oauth2/v2.0/token")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = "client_id=\(clientID)&grant_type=refresh_token&refresh_token=\(refreshToken)&scope=XboxLive.signin offline_access".data(using: .utf8)
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return try JSONDecoder().decode(MicrosoftTokenResponse.self, from: data)
+    }
+}
+
+enum AuthError: LocalizedError, Equatable {
+    case userDeclined
+    case codeExpired
+    case tokenExchangeFailed(String)
+    case xstsAuthFailed(Int)
+    case noMinecraftProfile
+
+    var errorDescription: String? {
+        switch self {
+        case .userDeclined: return "登录已被拒绝。"
+        case .codeExpired: return "设备代码已过期，请重试。"
+        case .tokenExchangeFailed(let desc): return "令牌交换失败：\(desc)"
+        case .xstsAuthFailed(let code): return "XSTS 认证失败（错误码 \(code)）。"
+        case .noMinecraftProfile: return "此账号没有 Minecraft Profile。请确认已购买游戏。"
+        }
+    }
+}

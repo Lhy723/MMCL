@@ -661,6 +661,101 @@ struct ModrinthFile: Codable, Equatable {
     var primary: Bool
 }
 
+struct MinecraftAccount: Codable, Equatable, Identifiable {
+    var id: UUID
+    var username: String
+    var uuid: String
+    var accessToken: String
+    var refreshToken: String
+    var expiresAt: Date
+    var type: AccountType
+
+    enum AccountType: String, Codable {
+        case offline
+        case microsoft
+    }
+
+    var displayName: String {
+        switch type {
+        case .offline: return "\(username)（离线）"
+        case .microsoft: return username
+        }
+    }
+
+    init(id: UUID = UUID(), username: String, uuid: String = "", accessToken: String = "", refreshToken: String = "", expiresAt: Date = Date(), type: AccountType = .offline) {
+        self.id = id
+        self.username = username
+        self.uuid = uuid
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.expiresAt = expiresAt
+        self.type = type
+    }
+}
+
+struct DeviceCodeResponse: Codable {
+    var userCode: String
+    var verificationUri: String
+    var expiresIn: Int
+    var interval: Int
+    var deviceCode: String
+
+    enum CodingKeys: String, CodingKey {
+        case userCode = "user_code"
+        case verificationUri = "verification_uri"
+        case expiresIn = "expires_in"
+        case interval
+        case deviceCode = "device_code"
+    }
+}
+
+struct MicrosoftTokenResponse: Codable {
+    var accessToken: String
+    var refreshToken: String
+    var expiresInSeconds: Int
+
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case expiresInSeconds = "expires_in"
+    }
+}
+
+struct XboxTokenResponse: Codable {
+    var token: String
+    var expiresInSeconds: Int
+
+    enum CodingKeys: String, CodingKey {
+        case token
+        case expiresInSeconds = "expiresIn"
+    }
+}
+
+struct XBLXSTSResponse: Codable {
+    var token: String
+    var expiresInSeconds: Int
+
+    enum CodingKeys: String, CodingKey {
+        case token
+        case expiresInSeconds = "expiresIn"
+    }
+}
+
+struct MinecraftTokenResponse: Codable {
+    var accessToken: String
+    var expiresInSeconds: Int
+
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case expiresInSeconds = "expires_in"
+    }
+}
+
+struct MinecraftProfileResponse: Codable {
+    var id: String
+    var name: String
+}
+
 extension JSONEncoder {
     static var mmcl: JSONEncoder {
         let encoder = JSONEncoder()

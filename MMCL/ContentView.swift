@@ -26,6 +26,14 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(store.selectedInstance == nil || store.selectedJavaRuntime == nil)
                 .help("启动选中的实例")
+
+                Picker("账号", selection: $store.selectedAccountID) {
+                    ForEach(store.accounts) { account in
+                        Text(account.displayName).tag(Optional(account.id))
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: 180)
             }
         }
         .onAppear {

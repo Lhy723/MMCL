@@ -28,6 +28,11 @@ final class LauncherStore: ObservableObject {
     @Published var showingCreateSheet: Bool = false
     @Published var showingLogSheet: Bool = false
 
+    @Published var accounts: [MinecraftAccount] = []
+    @Published var selectedAccountID: MinecraftAccount.ID?
+    @Published var isLoggingIn = false
+    @Published var deviceCodeMessage: String = ""
+
     @Published var modrinthSearchResults: [ModrinthSearchResult] = []
     @Published var modrinthSearchQuery: String = ""
     @Published var showingModrinthDetail: Bool = false
@@ -42,6 +47,7 @@ final class LauncherStore: ObservableObject {
     private let quiltService: QuiltServicing
     private let forgeService: ForgeServicing
     let modrinthService: ModrinthServicing
+    private let authService: AuthServicing
 
     init(
         instances: [LauncherInstance] = LauncherStore.sampleInstances,
@@ -59,7 +65,8 @@ final class LauncherStore: ObservableObject {
         fabricService: FabricServicing = FabricService(),
         quiltService: QuiltServicing = QuiltService(),
         forgeService: ForgeServicing = ForgeService(),
-        modrinthService: ModrinthServicing = ModrinthService()
+        modrinthService: ModrinthServicing = ModrinthService(),
+        authService: AuthServicing = AuthService()
     ) {
         self.instances = instances
         self.downloadJobs = downloadJobs
@@ -77,6 +84,7 @@ final class LauncherStore: ObservableObject {
         self.quiltService = quiltService
         self.forgeService = forgeService
         self.modrinthService = modrinthService
+        self.authService = authService
         self.selectedJavaRuntimeID = javaRuntimes.first?.id
         self.selectedSection = instances.first.map { .instance($0.id) } ?? .downloads
     }
@@ -90,6 +98,75 @@ final class LauncherStore: ObservableObject {
         if selectedSection == nil {
             selectedSection = instances.first.map { .instance($0.id) }
         }
+    }
+
+    func startMicrosoftLogin() async {
+        isLoggingIn = true
+        do {
+            let deviceCode = try await authService.startDeviceCodeFlow()
+            deviceCodeMessage = "请在浏览器中打开 \(deviceCode.verificationUri)，输入代码：\(deviceCode.userCode)"
+            let token = try await authService.pollForToken(deviceCode: deviceCode.deviceCode, interval: deviceCode.interval)
+
+            let xblToken = try await authService.exchangeForXBLToken(accessToken: token.accessToken)
+            let xstsToken = try await authService.exchangeForXSTSToken(xblToken: xblToken.token)
+            let mcToken = try await authService.exchangeForMinecraftToken(xstsToken: xstsToken.token)
+            let profile = try await authService.fetchMinecraftProfile(accessToken: mcToken.accessToken)
+
+            let account = MinecraftAccount(
+                username: profile.name,
+                uuid: profile.id,
+                accessToken: mcToken.accessToken,
+                refreshToken: token.refreshToken,
+                expiresAt: Date().addingTimeInterval(TimeInterval(mcToken.expiresInSeconds)),
+                type: .microsoft
+            )
+
+            if !accounts.contains(where: { $0.uuid == account.uuid }) {
+                accounts.append(account)
+            }
+            selectedAccountID = account.id
+            isLoggingIn = false
+            deviceCodeMessage = ""
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "登录成功",
+                    severity: .info,
+                    summary: "已登录 Microsoft 账号 \(profile.name)。",
+                    suggestedActions: ["启动游戏将使用在线模式"]
+                ),
+                at: 0
+            )
+        } catch {
+            isLoggingIn = false
+            deviceCodeMessage = ""
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "登录失败",
+                    severity: .error,
+                    summary: error.localizedDescription,
+                    suggestedActions: ["检查网络连接", "确认 Microsoft 账号已购买 Minecraft"]
+                ),
+                at: 0
+            )
+        }
+    }
+
+    func addOfflineAccount(username: String) {
+        let account = MinecraftAccount(username: username, type: .offline)
+        accounts.append(account)
+        selectedAccountID = account.id
+    }
+
+    func deleteAccount(_ account: MinecraftAccount) {
+        accounts.removeAll { $0.id == account.id }
+        if selectedAccountID == account.id {
+            selectedAccountID = accounts.first?.id
+        }
+    }
+
+    var selectedAccount: MinecraftAccount? {
+        guard let selectedAccountID else { return accounts.first }
+        return accounts.first { $0.id == selectedAccountID } ?? accounts.first
     }
 
     func createInstance(
