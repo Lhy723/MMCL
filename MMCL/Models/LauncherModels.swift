@@ -483,6 +483,20 @@ struct DownloadJob: Identifiable, Codable, Equatable {
     }
 }
 
+struct ModInfo: Identifiable, Equatable {
+    var id: String { fileName }
+    var fileName: String
+    var isEnabled: Bool
+    var size: Int64
+}
+
+struct ResourcePackInfo: Identifiable, Equatable {
+    var id: String { fileName }
+    var fileName: String
+    var isEnabled: Bool
+    var size: Int64
+}
+
 struct ContentProject: Identifiable, Codable, Equatable {
     enum ProjectType: String, Codable {
         case mod = "Mod"

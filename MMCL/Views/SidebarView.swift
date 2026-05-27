@@ -10,6 +10,16 @@ struct SidebarView: View {
                     InstanceSidebarRow(instance: instance)
                         .tag(LauncherStore.Section.instance(instance.id))
                         .contextMenu {
+                            Button {
+                                store.showingRenameSheet = true
+                            } label: {
+                                Label("重命名", systemImage: "pencil")
+                            }
+                            Button {
+                                store.copyInstance(instance)
+                            } label: {
+                                Label("复制实例", systemImage: "doc.on.doc")
+                            }
                             Button(role: .destructive) {
                                 store.deleteInstance(instance)
                             } label: {

@@ -52,6 +52,21 @@ struct ContentView: View {
                 ModrinthProjectDetailView(project: project, store: store)
             }
         }
+        .sheet(isPresented: $store.showingRenameSheet) {
+            if let instance = store.selectedInstance {
+                InstanceRenameSheet(instance: instance, store: store)
+            }
+        }
+        .sheet(isPresented: $store.showingModList) {
+            if let instance = store.selectedInstance {
+                ModListView(instance: instance, store: store)
+            }
+        }
+        .sheet(isPresented: $store.showingResourcePacks) {
+            if let instance = store.selectedInstance {
+                ResourcePackListView(instance: instance, store: store)
+            }
+        }
     }
 
     @ViewBuilder

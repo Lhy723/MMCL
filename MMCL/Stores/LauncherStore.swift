@@ -27,6 +27,9 @@ final class LauncherStore: ObservableObject {
     @Published var preferredDownloadSource: DownloadSource = .bmclapi
     @Published var showingCreateSheet: Bool = false
     @Published var showingLogSheet: Bool = false
+    @Published var showingRenameSheet: Bool = false
+    @Published var showingModList: Bool = false
+    @Published var showingResourcePacks: Bool = false
 
     @Published var accounts: [MinecraftAccount] = []
     @Published var selectedAccountID: MinecraftAccount.ID?
@@ -254,6 +257,96 @@ final class LauncherStore: ObservableObject {
             ),
             at: 0
         )
+    }
+
+    func renameInstance(_ instance: LauncherInstance, to newName: String) {
+        guard !newName.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        guard let index = instances.firstIndex(where: { $0.id == instance.id }) else { return }
+        instances[index].name = newName
+        do {
+            let data = try instanceService.encode(instances[index])
+            try data.write(to: instanceService.instanceFileURL(for: instances[index]), options: .atomic)
+        } catch {
+            diagnostics.insert(
+                DiagnosticReport(title: "重命名失败", severity: .error, summary: error.localizedDescription, suggestedActions: ["检查文件权限"]),
+                at: 0
+            )
+        }
+    }
+
+    func copyInstance(_ instance: LauncherInstance) {
+        let newName = "\(instance.name)（副本）"
+        let profile = LaunchProfile(
+            offlineUsername: instance.profile.offlineUsername,
+            memoryMegabytes: instance.profile.memoryMegabytes,
+            jvmArguments: instance.profile.jvmArguments
+        )
+        do {
+            let copy = try instanceService.createInstance(
+                name: newName,
+                gameVersion: instance.gameVersion,
+                loader: instance.loader,
+                profile: profile
+            )
+            instances.append(copy)
+            selectedSection = .instance(copy.id)
+            diagnostics.insert(
+                DiagnosticReport(title: "实例已复制", severity: .info, summary: "\(instance.name) 已复制为 \(newName)。", suggestedActions: []),
+                at: 0
+            )
+        } catch {
+            diagnostics.insert(
+                DiagnosticReport(title: "复制失败", severity: .error, summary: error.localizedDescription, suggestedActions: []),
+                at: 0
+            )
+        }
+    }
+
+    func scanInstalledMods(for instance: LauncherInstance) -> [ModInfo] {
+        let modsDir = instance.rootDirectory.appendingPathComponent("mods", isDirectory: true)
+        guard let files = try? FileManager.default.contentsOfDirectory(at: modsDir, includingPropertiesForKeys: [.fileSizeKey]) else {
+            return []
+        }
+        return files
+            .filter { $0.pathExtension == "jar" || $0.pathExtension == "disabled" }
+            .map { url in
+                let isEnabled = url.pathExtension == "jar"
+                let actualURL = isEnabled ? url : url.deletingPathExtension()
+                let size = (try? actualURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                let name = actualURL.lastPathComponent
+                return ModInfo(fileName: name, isEnabled: isEnabled, size: Int64(size))
+            }
+            .sorted { $0.fileName < $1.fileName }
+    }
+
+    func toggleMod(for instance: LauncherInstance, mod: ModInfo) {
+        let modsDir = instance.rootDirectory.appendingPathComponent("mods", isDirectory: true)
+        let currentURL = modsDir.appendingPathComponent(mod.fileName + (mod.isEnabled ? ".jar" : ".jar.disabled"))
+        let newURL = modsDir.appendingPathComponent(mod.fileName + (mod.isEnabled ? ".jar.disabled" : ".jar"))
+        try? FileManager.default.moveItem(at: currentURL, to: newURL)
+    }
+
+    func deleteMod(for instance: LauncherInstance, mod: ModInfo) {
+        let modsDir = instance.rootDirectory.appendingPathComponent("mods", isDirectory: true)
+        let fileName = mod.fileName + (mod.isEnabled ? ".jar" : ".jar.disabled")
+        try? FileManager.default.removeItem(at: modsDir.appendingPathComponent(fileName))
+    }
+
+    func scanResourcePacks(for instance: LauncherInstance) -> [ResourcePackInfo] {
+        let dir = instance.rootDirectory.appendingPathComponent(".minecraft/resourcepacks", isDirectory: true)
+        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey]) else { return [] }
+        return files
+            .filter { $0.pathExtension == "zip" }
+            .map { url in
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                return ResourcePackInfo(fileName: url.lastPathComponent, isEnabled: true, size: Int64(size))
+            }
+            .sorted { $0.fileName < $1.fileName }
+    }
+
+    func deleteResourcePack(for instance: LauncherInstance, pack: ResourcePackInfo) {
+        let dir = instance.rootDirectory.appendingPathComponent(".minecraft/resourcepacks", isDirectory: true)
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent(pack.fileName))
     }
 
     var selectedJavaRuntime: JavaRuntime? {

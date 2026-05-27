@@ -163,6 +163,18 @@ struct InstanceDetailView: View {
                     Label("打开日志", systemImage: "doc.text.magnifyingglass")
                 }
 
+                Button {
+                    store.showingModList = true
+                } label: {
+                    Label("管理 Mod", systemImage: "puzzlepiece.extension")
+                }
+
+                Button {
+                    store.showingResourcePacks = true
+                } label: {
+                    Label("资源包", systemImage: "photo")
+                }
+
                 if instance.loader == .fabric {
                     Button {
                         Task {
