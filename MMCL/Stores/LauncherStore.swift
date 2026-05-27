@@ -944,74 +944,118 @@ final class LauncherStore: ObservableObject {
     }
 
     func executeQueuedDownloads() async {
-        let queuedIndices = downloadJobs.indices.filter { downloadJobs[$0].status == .queued }
-        guard !queuedIndices.isEmpty else { return }
+        let queuedIDs = downloadJobs.filter { $0.status == .queued }.map(\.id)
+        guard !queuedIDs.isEmpty else { return }
 
         speedTracker.reset()
 
-        for index in queuedIndices {
+        downloadService.onProgress = { [weak self] jobID, bytesWritten in
+            Task { @MainActor in
+                guard let self else { return }
+                if let index = self.downloadJobs.firstIndex(where: { $0.id == jobID }) {
+                    self.downloadJobs[index].completedBytes = bytesWritten
+                }
+            }
+        }
+
+        downloadService.onComplete = { [weak self] jobID, completedJob in
+            Task { @MainActor in
+                guard let self else { return }
+                if let index = self.downloadJobs.firstIndex(where: { $0.id == jobID }) {
+                    self.downloadJobs[index] = completedJob
+                }
+                self.speedTracker.addBytes(completedJob.totalBytes)
+                self.activeDownloadCount -= 1
+                if self.activeDownloadCount <= 0 {
+                    self.finalizeDownloadedPlanIfPossible()
+                }
+            }
+        }
+
+        downloadService.onError = { [weak self] jobID, error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let index = self.downloadJobs.firstIndex(where: { $0.id == jobID }) {
+                    self.downloadJobs[index].status = .failed
+                }
+                self.diagnostics.insert(
+                    DiagnosticReport(
+                        title: "下载失败",
+                        severity: .error,
+                        summary: error.localizedDescription,
+                        suggestedActions: ["检查网络连接和下载源", "重新生成安装计划后重试"]
+                    ),
+                    at: 0
+                )
+                self.activeDownloadCount -= 1
+                if self.activeDownloadCount <= 0 {
+                    self.finalizeDownloadedPlanIfPossible()
+                }
+            }
+        }
+
+        activeDownloadCount = queuedIDs.count
+        var started = 0
+        for id in queuedIDs {
+            if let index = downloadJobs.firstIndex(where: { $0.id == id }) {
+                downloadJobs[index].status = .running
+                downloadService.startDownload(downloadJobs[index])
+                started += 1
+                if started >= 4 { break }
+            }
+        }
+        queuedDownloadIDs = Array(queuedIDs.dropFirst(started))
+    }
+
+    private var queuedDownloadIDs: [UUID] = []
+    private var activeDownloadCount: Int = 0
+
+    func startNextQueuedDownloadIfNeeded() {
+        guard !queuedDownloadIDs.isEmpty else { return }
+        let nextID = queuedDownloadIDs.removeFirst()
+        if let index = downloadJobs.firstIndex(where: { $0.id == nextID }) {
             downloadJobs[index].status = .running
+            downloadService.startDownload(downloadJobs[index])
+            activeDownloadCount += 1
         }
+    }
 
-        await withTaskGroup(of: (Int, DownloadJob?).self) { group in
-            var activeTasks = 0
-            var nextIndex = 0
-
-            func startNext() -> Bool {
-                guard nextIndex < queuedIndices.count else { return false }
-                let index = queuedIndices[nextIndex]
-                nextIndex += 1
-                group.addTask { [self] in
-                    do {
-                        let completedJob = try await downloadService.execute(job: downloadJobs[index])
-                        return (index, completedJob)
-                    } catch {
-                        var failedJob = downloadJobs[index]
-                        failedJob.status = .failed
-                        return (index, failedJob)
-                    }
-                }
-                activeTasks += 1
-                return true
-            }
-
-            // Start initial batch (max 4)
-            for _ in 0..<min(4, queuedIndices.count) {
-                _ = startNext()
-            }
-
-            for await (index, result) in group {
-                activeTasks -= 1
-                if let result {
-                    downloadJobs[index] = result
-                    if result.status == .completed {
-                        speedTracker.addBytes(result.totalBytes)
-                    }
-                    if result.status == .failed {
-                        diagnostics.insert(
-                            DiagnosticReport(
-                                title: "下载失败",
-                                severity: .error,
-                                summary: "\(result.title)：下载失败",
-                                suggestedActions: ["检查网络连接和下载源", "重新生成安装计划后重试"]
-                            ),
-                            at: 0
-                        )
-                    }
-                }
-                _ = startNext()
+    func pauseDownloads() {
+        for index in downloadJobs.indices {
+            if downloadJobs[index].status == .running {
+                downloadService.pauseDownload(id: downloadJobs[index].id)
+                downloadJobs[index].status = .paused
             }
         }
+        diagnostics.insert(
+            DiagnosticReport(
+                title: "下载已暂停",
+                severity: .info,
+                summary: "所有进行中的下载任务已暂停。",
+                suggestedActions: ["点击「继续下载」恢复"]
+            ),
+            at: 0
+        )
+    }
 
-        finalizeDownloadedPlanIfPossible()
+    func resumeDownloads() {
+        for index in downloadJobs.indices {
+            if downloadJobs[index].status == .paused {
+                downloadService.resumeDownload(id: downloadJobs[index].id)
+                downloadJobs[index].status = .running
+            }
+        }
     }
 
     func cancelDownloads() {
+        downloadService.cancelAllDownloads()
         for index in downloadJobs.indices {
-            if downloadJobs[index].status == .queued || downloadJobs[index].status == .running {
+            if downloadJobs[index].status.isActive {
                 downloadJobs[index].status = .failed
             }
         }
+        queuedDownloadIDs.removeAll()
+        activeDownloadCount = 0
         diagnostics.insert(
             DiagnosticReport(
                 title: "下载已取消",

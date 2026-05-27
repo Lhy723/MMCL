@@ -432,6 +432,7 @@ enum DownloadSource: String, Codable, CaseIterable, Identifiable {
 enum DownloadStatus: String, Codable {
     case queued
     case running
+    case paused
     case completed
     case failed
 
@@ -439,13 +440,23 @@ enum DownloadStatus: String, Codable {
         switch self {
         case .queued: return "等待中"
         case .running: return "下载中"
+        case .paused: return "已暂停"
         case .completed: return "已完成"
         case .failed: return "失败"
         }
     }
+
+    var isActive: Bool {
+        self == .queued || self == .running || self == .paused
+    }
 }
 
 struct DownloadJob: Identifiable, Codable, Equatable {
+    private enum CodingKeys: String, CodingKey {
+        case id, title, source, remoteURL, destination, sha1
+        case totalBytes, completedBytes, bytesPerSecond, status
+    }
+
     var id: UUID
     var title: String
     var source: DownloadSource
@@ -456,6 +467,9 @@ struct DownloadJob: Identifiable, Codable, Equatable {
     var completedBytes: Int64
     var bytesPerSecond: Int64
     var status: DownloadStatus
+
+    /// Resume data for paused downloads (not persisted)
+    var resumeData: Data?
 
     init(
         id: UUID = UUID(),

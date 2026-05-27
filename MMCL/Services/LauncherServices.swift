@@ -158,7 +158,11 @@ struct VersionManifestService: VersionManifestServicing {
     }
 }
 
-protocol DownloadServicing {
+protocol DownloadServicing: AnyObject {
+    var onProgress: ((UUID, Int64) -> Void)? { get set }
+    var onComplete: ((UUID, DownloadJob) -> Void)? { get set }
+    var onError: ((UUID, Error) -> Void)? { get set }
+
     func makeVanillaClientJob(version: String, destination: URL) -> DownloadJob
     func writeVersionMetadata(metadata: VersionMetadata, instance: LauncherInstance) throws -> URL
     func makeVanillaInstallJobs(
@@ -177,10 +181,131 @@ protocol DownloadServicing {
         source: DownloadSource
     ) -> [DownloadJob]
     func prepareNativeLibraries(metadata: VersionMetadata, instance: LauncherInstance) throws -> [URL]
-    func execute(job: DownloadJob) async throws -> DownloadJob
+    func startDownload(_ job: DownloadJob)
+    func pauseDownload(id: UUID)
+    func resumeDownload(id: UUID)
+    func cancelAllDownloads()
 }
 
-struct DownloadService: DownloadServicing {
+final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDelegate {
+    var onProgress: ((UUID, Int64) -> Void)?
+    var onComplete: ((UUID, DownloadJob) -> Void)?
+    var onError: ((UUID, Error) -> Void)?
+
+    private var session: URLSession!
+    private var activeTasks: [UUID: URLSessionDownloadTask] = [:]
+    private var resumeDataMap: [UUID: Data] = [:]
+    private var jobsByID: [UUID: DownloadJob] = [:]
+
+    override init() {
+        super.init()
+        session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+    }
+
+    // MARK: - Download Control
+
+    func startDownload(_ job: DownloadJob) {
+        guard let remoteURL = job.remoteURL else {
+            onError?(job.id, DownloadExecutionError.missingRemoteURL(jobTitle: job.title))
+            return
+        }
+
+        var runningJob = job
+        runningJob.status = .running
+        jobsByID[job.id] = runningJob
+
+        // Handle file URLs directly (URLSessionDownloadTask doesn't support them)
+        if remoteURL.isFileURL {
+            DispatchQueue.global().async { [weak self] in
+                guard let self else { return }
+                let parentDir = job.destination.deletingLastPathComponent()
+                do {
+                    try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+                    if FileManager.default.fileExists(atPath: job.destination.path) {
+                        try FileManager.default.removeItem(at: job.destination)
+                    }
+                    try FileManager.default.copyItem(at: remoteURL, to: job.destination)
+
+                    if let expectedSHA1 = job.sha1 {
+                        let data = try Data(contentsOf: job.destination)
+                        let actualSHA1 = Self.sha1Hex(for: data)
+                        if actualSHA1.caseInsensitiveCompare(expectedSHA1) != .orderedSame {
+                            var failedJob = job
+                            failedJob.status = .failed
+                            self.jobsByID[job.id] = failedJob
+                            self.onError?(job.id, DownloadExecutionError.sha1Mismatch(
+                                jobTitle: job.title,
+                                expected: expectedSHA1,
+                                actual: actualSHA1
+                            ))
+                            return
+                        }
+                    }
+
+                    var completedJob = job
+                    completedJob.completedBytes = job.totalBytes
+                    completedJob.status = .completed
+                    self.jobsByID[job.id] = completedJob
+                    self.onComplete?(job.id, completedJob)
+                } catch {
+                    var failedJob = job
+                    failedJob.status = .failed
+                    self.jobsByID[job.id] = failedJob
+                    self.onError?(job.id, error)
+                }
+            }
+            return
+        }
+
+        let task: URLSessionDownloadTask
+        if let resumeData = resumeDataMap[job.id] {
+            task = session.downloadTask(withResumeData: resumeData)
+            resumeDataMap.removeValue(forKey: job.id)
+        } else {
+            task = session.downloadTask(with: remoteURL)
+        }
+        task.taskDescription = job.id.uuidString
+        activeTasks[job.id] = task
+        task.resume()
+    }
+
+    func pauseDownload(id: UUID) {
+        guard let task = activeTasks[id] else { return }
+        task.cancel { [weak self] data in
+            if let data {
+                self?.resumeDataMap[id] = data
+            }
+        }
+        activeTasks.removeValue(forKey: id)
+        if var job = jobsByID[id] {
+            job.status = .paused
+            jobsByID[id] = job
+        }
+    }
+
+    func resumeDownload(id: UUID) {
+        guard var job = jobsByID[id], job.status == .paused else { return }
+        job.status = .queued
+        jobsByID[id] = job
+        startDownload(job)
+    }
+
+    func cancelAllDownloads() {
+        for (_, task) in activeTasks {
+            task.cancel()
+        }
+        activeTasks.removeAll()
+        resumeDataMap.removeAll()
+        for (id, _) in jobsByID {
+            if var job = jobsByID[id], job.status.isActive {
+                job.status = .failed
+                jobsByID[id] = job
+            }
+        }
+    }
+
+    // MARK: - Job Factory Methods
+
     func makeVanillaClientJob(version: String, destination: URL) -> DownloadJob {
         DownloadJob(title: "Minecraft \(version) 客户端", source: .official, destination: destination, totalBytes: 1)
     }
@@ -331,42 +456,96 @@ struct DownloadService: DownloadServicing {
         }
     }
 
-    func execute(job: DownloadJob) async throws -> DownloadJob {
-        guard let remoteURL = job.remoteURL else {
-            throw DownloadExecutionError.missingRemoteURL(jobTitle: job.title)
+    // MARK: - URLSessionDownloadDelegate
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        guard let uuidString = downloadTask.taskDescription,
+              let jobID = UUID(uuidString: uuidString),
+              var job = jobsByID[jobID] else { return }
+
+        activeTasks.removeValue(forKey: jobID)
+
+        let parentDirectory = job.destination.deletingLastPathComponent()
+        do {
+            try FileManager.default.createDirectory(at: parentDirectory, withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: job.destination.path) {
+                try FileManager.default.removeItem(at: job.destination)
+            }
+            try FileManager.default.moveItem(at: location, to: job.destination)
+        } catch {
+            job.status = .failed
+            jobsByID[jobID] = job
+            onError?(jobID, error)
+            return
         }
 
-        var runningJob = job
-        runningJob.status = .running
-
-        let data: Data
-        if remoteURL.isFileURL {
-            data = try Data(contentsOf: remoteURL)
-        } else {
-            let response = try await URLSession.shared.data(from: remoteURL)
-            data = response.0
-        }
-
-        let parentDirectory = runningJob.destination.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: parentDirectory, withIntermediateDirectories: true)
-        try data.write(to: runningJob.destination, options: .atomic)
-
-        if let expectedSHA1 = runningJob.sha1 {
-            let actualSHA1 = Self.sha1Hex(for: data)
-            guard actualSHA1.caseInsensitiveCompare(expectedSHA1) == .orderedSame else {
-                var failedJob = runningJob
-                failedJob.status = .failed
-                failedJob.completedBytes = Int64(data.count)
-                throw DownloadExecutionError.sha1Mismatch(
-                    jobTitle: runningJob.title,
-                    expected: expectedSHA1,
-                    actual: actualSHA1
-                )
+        if let expectedSHA1 = job.sha1 {
+            if let data = try? Data(contentsOf: job.destination) {
+                let actualSHA1 = Self.sha1Hex(for: data)
+                if actualSHA1.caseInsensitiveCompare(expectedSHA1) != .orderedSame {
+                    job.status = .failed
+                    jobsByID[jobID] = job
+                    onError?(jobID, DownloadExecutionError.sha1Mismatch(
+                        jobTitle: job.title,
+                        expected: expectedSHA1,
+                        actual: actualSHA1
+                    ))
+                    return
+                }
             }
         }
 
-        runningJob.update(completedBytes: Int64(data.count))
-        return runningJob
+        job.completedBytes = job.totalBytes
+        job.status = .completed
+        jobsByID[jobID] = job
+        onComplete?(jobID, job)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        guard let uuidString = downloadTask.taskDescription,
+              let jobID = UUID(uuidString: uuidString) else { return }
+
+        if var job = jobsByID[jobID] {
+            job.completedBytes = totalBytesWritten
+            if totalBytesExpectedToWrite > 0 {
+                job.totalBytes = totalBytesExpectedToWrite
+            }
+            jobsByID[jobID] = job
+        }
+        onProgress?(jobID, totalBytesWritten)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        guard let downloadTask = task as? URLSessionDownloadTask,
+              let uuidString = downloadTask.taskDescription,
+              let jobID = UUID(uuidString: uuidString) else { return }
+
+        activeTasks.removeValue(forKey: jobID)
+
+        if let error {
+            if (error as NSError).code == NSURLErrorCancelled {
+                return
+            }
+            if var job = jobsByID[jobID] {
+                job.status = .failed
+                jobsByID[jobID] = job
+            }
+            onError?(jobID, error)
+        }
     }
 
     static func sha1Hex(for data: Data) -> String {

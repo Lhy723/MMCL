@@ -39,7 +39,22 @@ struct DownloadsView: View {
                 } label: {
                     Label("取消", systemImage: "xmark.circle")
                 }
-                .disabled(!store.downloadJobs.contains { $0.status == .running })
+                .disabled(!store.downloadJobs.contains { $0.status.isActive })
+
+                Button {
+                    if store.downloadJobs.contains(where: { $0.status == .running }) {
+                        store.pauseDownloads()
+                    } else if store.downloadJobs.contains(where: { $0.status == .paused }) {
+                        store.resumeDownloads()
+                    }
+                } label: {
+                    if store.downloadJobs.contains(where: { $0.status == .running }) {
+                        Label("暂停", systemImage: "pause.circle")
+                    } else {
+                        Label("继续下载", systemImage: "play.circle")
+                    }
+                }
+                .disabled(!store.downloadJobs.contains { $0.status == .running || $0.status == .paused })
 
                 Button {
                     store.expandSelectedInstanceAssetIndex()
