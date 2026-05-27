@@ -37,6 +37,8 @@ final class LauncherStore: ObservableObject {
     private let javaRuntimeService: JavaRuntimeServicing
     private let instanceService: InstanceServicing
     private let fabricService: FabricServicing
+    private let quiltService: QuiltServicing
+    private let forgeService: ForgeServicing
     private let modrinthService: ModrinthServicing
 
     init(
@@ -53,6 +55,8 @@ final class LauncherStore: ObservableObject {
         javaRuntimeService: JavaRuntimeServicing = JavaRuntimeService(),
         instanceService: InstanceServicing = InstanceService(),
         fabricService: FabricServicing = FabricService(),
+        quiltService: QuiltServicing = QuiltService(),
+        forgeService: ForgeServicing = ForgeService(),
         modrinthService: ModrinthServicing = ModrinthService()
     ) {
         self.instances = instances
@@ -68,6 +72,8 @@ final class LauncherStore: ObservableObject {
         self.javaRuntimeService = javaRuntimeService
         self.instanceService = instanceService
         self.fabricService = fabricService
+        self.quiltService = quiltService
+        self.forgeService = forgeService
         self.modrinthService = modrinthService
         self.selectedJavaRuntimeID = javaRuntimes.first?.id
         self.selectedSection = instances.first.map { .instance($0.id) } ?? .downloads
@@ -460,6 +466,36 @@ final class LauncherStore: ObservableObject {
                 ),
                 at: 0
             )
+        }
+    }
+
+    func installQuiltLoader(for instance: LauncherInstance) async {
+        do {
+            let metadata = try await quiltService.installQuilt(gameVersion: instance.gameVersion, loaderVersion: nil, instance: instance)
+            plannedVersionMetadata = metadata
+            plannedInstanceID = instance.id
+            let jobs = downloadService.makeVanillaInstallJobs(metadata: metadata, instance: instance, source: selectedDownloadSource)
+            downloadJobs = jobs
+            updateInstanceStatus(instance.id, status: .missingFiles)
+            diagnostics.insert(DiagnosticReport(title: "Quilt loader 已安装", severity: .info, summary: "已为 \(instance.name) 安装 Quilt loader，生成 \(jobs.count) 个下载任务。", suggestedActions: ["打开下载中心执行任务"]), at: 0)
+            selectedSection = .downloads
+        } catch {
+            diagnostics.insert(DiagnosticReport(title: "Quilt loader 安装失败", severity: .error, summary: error.localizedDescription, suggestedActions: ["确认已安装基础版本", "检查网络连接"]), at: 0)
+        }
+    }
+
+    func installForgeLoader(for instance: LauncherInstance) async {
+        do {
+            let metadata = try await forgeService.installForge(gameVersion: instance.gameVersion, forgeVersion: nil, instance: instance)
+            plannedVersionMetadata = metadata
+            plannedInstanceID = instance.id
+            let jobs = downloadService.makeVanillaInstallJobs(metadata: metadata, instance: instance, source: selectedDownloadSource)
+            downloadJobs = jobs
+            updateInstanceStatus(instance.id, status: .missingFiles)
+            diagnostics.insert(DiagnosticReport(title: "Forge 已安装", severity: .info, summary: "已为 \(instance.name) 安装 Forge，生成 \(jobs.count) 个下载任务。", suggestedActions: ["打开下载中心执行任务"]), at: 0)
+            selectedSection = .downloads
+        } catch {
+            diagnostics.insert(DiagnosticReport(title: "Forge 安装失败", severity: .error, summary: error.localizedDescription, suggestedActions: ["确认已安装基础版本", "检查网络连接"]), at: 0)
         }
     }
 

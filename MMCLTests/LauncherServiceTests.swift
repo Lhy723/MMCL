@@ -452,6 +452,25 @@ final class LauncherServiceTests: XCTestCase {
         XCTAssertEqual(versions.first?.loaders, ["fabric"])
     }
 
+    func testQuiltLoaderVersionParsesCorrectly() throws {
+        let json = """
+        [{"version":"0.5.0","stable":true},{"version":"0.4.0","stable":false}]
+        """.data(using: .utf8)!
+        let versions = try JSONDecoder.mmcl.decode([QuiltLoaderVersion].self, from: json)
+        XCTAssertEqual(versions.count, 2)
+        XCTAssertTrue(versions[0].stable)
+    }
+
+    func testForgeVersionParsesPromotions() throws {
+        let json = """
+        {"promos":{"1.21.5-latest":"56.0.1","1.21.5-recommended":"56.0.0","1.20.1-latest":"47.3.0"}}
+        """.data(using: .utf8)!
+        let promo = try JSONSerialization.jsonObject(with: json) as? [String: Any]
+        let promos = promo?["promos"] as? [String: String] ?? [:]
+        XCTAssertEqual(promos["1.21.5-latest"], "56.0.1")
+        XCTAssertEqual(promos["1.20.1-latest"], "47.3.0")
+    }
+
     private static let legacyArgumentsMetadataJSON = """
     {
       "id": "1.12.2",

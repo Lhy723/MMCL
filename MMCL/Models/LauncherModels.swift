@@ -562,6 +562,35 @@ struct FabricProfile: Codable, Equatable {
     }
 }
 
+struct QuiltLoaderVersion: Codable, Identifiable, Equatable {
+    var id: String { version }
+    var version: String
+    var stable: Bool
+}
+
+struct QuiltProfile: Codable, Equatable {
+    var id: String
+    var inheritsFrom: String
+    var mainClass: String
+
+    struct QuiltArguments: Codable, Equatable {
+        var game: [String]?
+        var jvm: [String]?
+    }
+    var arguments: QuiltArguments?
+}
+
+struct ForgeVersion: Codable, Identifiable, Equatable {
+    var id: String { version }
+    var version: String
+    var installerURL: String
+
+    enum CodingKeys: String, CodingKey {
+        case version
+        case installerURL = "installer_url"
+    }
+}
+
 struct ModrinthSearchResult: Codable, Identifiable, Equatable {
     var id: String
     var slug: String

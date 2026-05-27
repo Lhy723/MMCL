@@ -950,6 +950,150 @@ enum FabricInstallError: LocalizedError, Equatable {
     }
 }
 
+protocol QuiltServicing {
+    func fetchLoaderVersions(gameVersion: String) async throws -> [QuiltLoaderVersion]
+    func fetchProfile(gameVersion: String, loaderVersion: String) async throws -> QuiltProfile
+    func installQuilt(gameVersion: String, loaderVersion: String?, instance: LauncherInstance) async throws -> VersionMetadata
+}
+
+struct QuiltService: QuiltServicing {
+    let baseURL = URL(string: "https://meta.quiltmc.org/v3")!
+
+    func fetchLoaderVersions(gameVersion: String) async throws -> [QuiltLoaderVersion] {
+        let url = baseURL.appendingPathComponent("versions/loader/\(gameVersion)")
+        let (data, _) = try await URLSession.shared.data(from: url)
+        return try JSONDecoder.mmcl.decode([QuiltLoaderVersion].self, from: data)
+    }
+
+    func fetchProfile(gameVersion: String, loaderVersion: String) async throws -> QuiltProfile {
+        let url = baseURL.appendingPathComponent("versions/loader/\(gameVersion)/\(loaderVersion)/profile")
+        let (data, _) = try await URLSession.shared.data(from: url)
+        return try JSONDecoder.mmcl.decode(QuiltProfile.self, from: data)
+    }
+
+    func installQuilt(gameVersion: String, loaderVersion: String? = nil, instance: LauncherInstance) async throws -> VersionMetadata {
+        let versions = try await fetchLoaderVersions(gameVersion: gameVersion)
+        let selectedVersion: String
+        if let explicit = loaderVersion {
+            selectedVersion = explicit
+        } else {
+            guard let latest = versions.first(where: { $0.stable }) ?? versions.first else {
+                throw QuiltInstallError.noLoaderAvailable(gameVersion)
+            }
+            selectedVersion = latest.version
+        }
+
+        let profile = try await fetchProfile(gameVersion: gameVersion, loaderVersion: selectedVersion)
+        let baseMetadata = try readBaseMetadata(instance: instance, gameVersion: profile.inheritsFrom)
+
+        var metadata = baseMetadata
+        metadata.id = "\(profile.inheritsFrom)-quilt-\(selectedVersion)"
+        metadata.mainClass = profile.mainClass
+
+        let versionDir = instance.rootDirectory
+            .appendingPathComponent(".minecraft", isDirectory: true)
+            .appendingPathComponent("versions", isDirectory: true)
+            .appendingPathComponent(metadata.id, isDirectory: true)
+        try FileManager.default.createDirectory(at: versionDir, withIntermediateDirectories: true)
+        try JSONEncoder.mmcl.encode(metadata).write(to: versionDir.appendingPathComponent("\(metadata.id).json"), options: .atomic)
+
+        return metadata
+    }
+
+    private func readBaseMetadata(instance: LauncherInstance, gameVersion: String) throws -> VersionMetadata {
+        let metadataURL = instance.rootDirectory
+            .appendingPathComponent(".minecraft", isDirectory: true)
+            .appendingPathComponent("versions", isDirectory: true)
+            .appendingPathComponent(gameVersion, isDirectory: true)
+            .appendingPathComponent("\(gameVersion).json")
+        guard let data = try? Data(contentsOf: metadataURL) else {
+            throw QuiltInstallError.baseMetadataNotFound(gameVersion)
+        }
+        return try JSONDecoder.mmcl.decode(VersionMetadata.self, from: data)
+    }
+}
+
+enum QuiltInstallError: LocalizedError, Equatable {
+    case noLoaderAvailable(String)
+    case baseMetadataNotFound(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .noLoaderAvailable(let v): return "没有可用的 Quilt loader 版本：Minecraft \(v)"
+        case .baseMetadataNotFound(let v): return "缺少基础版本元数据：\(v)。请先安装原版 \(v)。"
+        }
+    }
+}
+
+protocol ForgeServicing {
+    func fetchVersions(gameVersion: String) async throws -> [ForgeVersion]
+    func installForge(gameVersion: String, forgeVersion: String?, instance: LauncherInstance) async throws -> VersionMetadata
+}
+
+struct ForgeService: ForgeServicing {
+    let baseURL = URL(string: "https://files.minecraftforge.net/net/minecraftforge/forge")!
+
+    func fetchVersions(gameVersion: String) async throws -> [ForgeVersion] {
+        let url = URL(string: "https://files.minecraftforge.net/net/minecraftforge/forge/\(gameVersion)/promotions_slim.json")!
+        let (data, _) = try await URLSession.shared.data(from: url)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let promo = json?["promos"] as? [String: String] ?? [:]
+        return promo.compactMap { key, value in
+            guard key.hasSuffix("-latest") || key.hasSuffix("-recommended") else { return nil }
+            let mcVersion = key.replacingOccurrences(of: "-latest", with: "").replacingOccurrences(of: "-recommended", with: "")
+            guard mcVersion == gameVersion else { return nil }
+            return ForgeVersion(
+                version: value,
+                installerURL: "https://files.minecraftforge.net/net/minecraftforge/forge/\(gameVersion)-\(value)/forge-\(gameVersion)-\(value)-installer.jar"
+            )
+        }
+    }
+
+    func installForge(gameVersion: String, forgeVersion: String? = nil, instance: LauncherInstance) async throws -> VersionMetadata {
+        let versions = try await fetchVersions(gameVersion: gameVersion)
+        guard let selected = versions.first else {
+            throw ForgeInstallError.noVersionAvailable(gameVersion)
+        }
+
+        let baseMetadata = try readBaseMetadata(instance: instance, gameVersion: gameVersion)
+        var metadata = baseMetadata
+        metadata.id = "\(gameVersion)-forge-\(selected.version)"
+
+        let versionDir = instance.rootDirectory
+            .appendingPathComponent(".minecraft", isDirectory: true)
+            .appendingPathComponent("versions", isDirectory: true)
+            .appendingPathComponent(metadata.id, isDirectory: true)
+        try FileManager.default.createDirectory(at: versionDir, withIntermediateDirectories: true)
+        try JSONEncoder.mmcl.encode(metadata).write(to: versionDir.appendingPathComponent("\(metadata.id).json"), options: .atomic)
+
+        return metadata
+    }
+
+    private func readBaseMetadata(instance: LauncherInstance, gameVersion: String) throws -> VersionMetadata {
+        let metadataURL = instance.rootDirectory
+            .appendingPathComponent(".minecraft", isDirectory: true)
+            .appendingPathComponent("versions", isDirectory: true)
+            .appendingPathComponent(gameVersion, isDirectory: true)
+            .appendingPathComponent("\(gameVersion).json")
+        guard let data = try? Data(contentsOf: metadataURL) else {
+            throw ForgeInstallError.baseMetadataNotFound(gameVersion)
+        }
+        return try JSONDecoder.mmcl.decode(VersionMetadata.self, from: data)
+    }
+}
+
+enum ForgeInstallError: LocalizedError, Equatable {
+    case noVersionAvailable(String)
+    case baseMetadataNotFound(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .noVersionAvailable(let v): return "没有可用的 Forge 版本：Minecraft \(v)"
+        case .baseMetadataNotFound(let v): return "缺少基础版本元数据：\(v)。请先安装原版 \(v)。"
+        }
+    }
+}
+
 protocol DiagnosticServicing {
     func javaMismatch(instance: LauncherInstance, runtime: JavaRuntime) -> DiagnosticReport?
 }

@@ -172,6 +172,22 @@ struct InstanceDetailView: View {
                         Label("安装 Fabric", systemImage: "shippingbox")
                     }
                 }
+
+                if instance.loader == .quilt {
+                    Button {
+                        Task { await store.installQuiltLoader(for: instance) }
+                    } label: {
+                        Label("安装 Quilt", systemImage: "shippingbox")
+                    }
+                }
+
+                if instance.loader == .forge {
+                    Button {
+                        Task { await store.installForgeLoader(for: instance) }
+                    } label: {
+                        Label("安装 Forge", systemImage: "hammer")
+                    }
+                }
             }
 
             if let session = store.currentLaunchSession {
