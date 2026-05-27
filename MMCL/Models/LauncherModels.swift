@@ -734,6 +734,22 @@ struct ModrinthFile: Codable, Equatable {
     var primary: Bool
 }
 
+struct SkinInfo: Identifiable, Codable, Equatable {
+    var id: UUID = UUID()
+    var name: String
+    var model: SkinModel
+    var localFileURL: URL?
+    var remoteURL: URL?
+    var isApplied: Bool = false
+
+    enum SkinModel: String, Codable, CaseIterable {
+        case steve = "Steve"
+        case alex = "Alex"
+
+        var label: String { rawValue }
+    }
+}
+
 struct MinecraftAccount: Codable, Equatable, Identifiable {
     var id: UUID
     var username: String
@@ -742,6 +758,7 @@ struct MinecraftAccount: Codable, Equatable, Identifiable {
     var refreshToken: String
     var expiresAt: Date
     var type: AccountType
+    var appliedSkin: SkinInfo?
 
     enum AccountType: String, Codable {
         case offline
@@ -755,7 +772,7 @@ struct MinecraftAccount: Codable, Equatable, Identifiable {
         }
     }
 
-    init(id: UUID = UUID(), username: String, uuid: String = "", accessToken: String = "", refreshToken: String = "", expiresAt: Date = Date(), type: AccountType = .offline) {
+    init(id: UUID = UUID(), username: String, uuid: String = "", accessToken: String = "", refreshToken: String = "", expiresAt: Date = Date(), type: AccountType = .offline, appliedSkin: SkinInfo? = nil) {
         self.id = id
         self.username = username
         self.uuid = uuid
@@ -763,6 +780,7 @@ struct MinecraftAccount: Codable, Equatable, Identifiable {
         self.refreshToken = refreshToken
         self.expiresAt = expiresAt
         self.type = type
+        self.appliedSkin = appliedSkin
     }
 }
 
@@ -903,4 +921,31 @@ struct JVMPreset: Identifiable, Codable, Equatable {
         JVMPreset(id: UUID(), name: "性能优化", arguments: ["-XX:+UseG1GC", "-XX:+UnlockExperimentalVMOptions", "-XX:G1HeapRegionSize=16M", "-XX:+OptimizeStringConcat"], isEnabled: false),
         JVMPreset(id: UUID(), name: "大内存", arguments: ["-XX:+UseG1GC", "-XX:MaxGCPauseMillis=20", "-XX:+UnlockExperimentalVMOptions", "-XX:G1NewSizePercent=30", "-XX:G1MaxNewSizePercent=40"], isEnabled: false),
     ]
+}
+
+// MARK: - Profile Import/Export
+
+struct ProfileExportData: Codable {
+    var version: String = "1.0"
+    var exportDate: Date = Date()
+    var instances: [LauncherInstance]
+    var accounts: [MinecraftAccount]
+    var settings: ProfileExportSettings
+}
+
+struct ProfileExportSettings: Codable {
+    var defaultMemoryMegabytes: Int
+    var defaultOfflineUsername: String
+    var preferredDownloadSource: DownloadSource
+    var defaultResolutionWidth: Int
+    var defaultResolutionHeight: Int
+    var jvmPresets: [JVMPreset]
+}
+
+// MARK: - Custom Background
+
+struct BackgroundImage: Equatable {
+    var url: URL?
+    var opacity: Double = 0.3
+    var blurRadius: CGFloat = 0
 }

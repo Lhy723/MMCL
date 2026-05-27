@@ -4,11 +4,26 @@ struct ContentView: View {
     @ObservedObject var store: LauncherStore
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView(store: store)
-        } detail: {
-            detailView
-        }
+        ZStack {
+            if let bgURL = store.backgroundImage.url {
+                AsyncImage(url: bgURL) { image in
+                    image
+                        .resizable()
+                        .scaledToFill()
+                        .blur(radius: store.backgroundImage.blurRadius)
+                        .opacity(store.backgroundImage.opacity)
+                        .allowsHitTesting(false)
+                } placeholder: {
+                    Color.clear
+                }
+                .ignoresSafeArea()
+            }
+
+            NavigationSplitView {
+                SidebarView(store: store)
+            } detail: {
+                detailView
+            }
         .toolbar {
             ToolbarItemGroup {
                 Button {
@@ -72,6 +87,10 @@ struct ContentView: View {
                 ShaderPackListView(instance: instance, store: store)
             }
         }
+        .sheet(isPresented: $store.showingSkinPicker) {
+            SkinPickerView(store: store)
+        }
+        }
     }
 
     @ViewBuilder
@@ -91,6 +110,12 @@ struct ContentView: View {
             CurseForgeView(store: store)
         case .diagnostics:
             DiagnosticsView(store: store)
+        case .skin:
+            if store.showingSkinPicker {
+                SkinPickerView(store: store)
+            } else {
+                EmptyStateView(title: "皮肤管理", message: "从侧边栏选择皮肤管理。", systemImage: "figure.stand")
+            }
         case .none:
             EmptyStateView(title: "欢迎使用 MMCL", message: "选择实例、下载中心或诊断日志开始。", systemImage: "gamecontroller")
         }

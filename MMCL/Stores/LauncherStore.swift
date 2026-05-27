@@ -8,6 +8,7 @@ final class LauncherStore: ObservableObject {
         case content
         case curseforge
         case diagnostics
+        case skin
     }
 
     @Published var instances: [LauncherInstance]
@@ -34,6 +35,8 @@ final class LauncherStore: ObservableObject {
     @Published var showingModList: Bool = false
     @Published var showingResourcePacks: Bool = false
     @Published var showingShaderPacks: Bool = false
+    @Published var availableSkins: [SkinInfo] = []
+    @Published var showingSkinPicker: Bool = false
 
     @Published var accounts: [MinecraftAccount] = []
     @Published var selectedAccountID: MinecraftAccount.ID?
@@ -55,6 +58,7 @@ final class LauncherStore: ObservableObject {
     @Published var colorScheme: AppColorScheme = .system
     @Published var appLanguage: AppLanguage = .chinese
     @Published var jvmPresets: [JVMPreset] = JVMPreset.defaults
+    @Published var backgroundImage: BackgroundImage = BackgroundImage()
 
     let speedTracker = DownloadSpeedTracker()
 
@@ -71,6 +75,7 @@ final class LauncherStore: ObservableObject {
     let curseForgeService: CurseForgeServicing
     private let authService: AuthServicing
     private let diagnosticService: DiagnosticServicing
+    private let skinService: SkinServicing
 
     init(
         instances: [LauncherInstance] = LauncherStore.sampleInstances,
@@ -92,7 +97,8 @@ final class LauncherStore: ObservableObject {
         modrinthService: ModrinthServicing = ModrinthService(),
         curseForgeService: CurseForgeServicing = CurseForgeService(),
         authService: AuthServicing = AuthService(),
-        diagnosticService: DiagnosticServicing = DiagnosticService()
+        diagnosticService: DiagnosticServicing = DiagnosticService(),
+        skinService: SkinServicing = SkinService()
     ) {
         self.instances = instances
         self.downloadJobs = downloadJobs
@@ -114,6 +120,7 @@ final class LauncherStore: ObservableObject {
         self.curseForgeService = curseForgeService
         self.authService = authService
         self.diagnosticService = diagnosticService
+        self.skinService = skinService
         self.selectedJavaRuntimeID = javaRuntimes.first?.id
         self.selectedSection = instances.first.map { .instance($0.id) } ?? .downloads
     }
@@ -395,6 +402,56 @@ final class LauncherStore: ObservableObject {
     func deleteShaderPack(for instance: LauncherInstance, pack: ShaderPackInfo) {
         let dir = instance.rootDirectory.appendingPathComponent(".minecraft/shaderpacks", isDirectory: true)
         try? FileManager.default.removeItem(at: dir.appendingPathComponent(pack.fileName))
+    }
+
+    // MARK: - Skin Management
+
+    func scanSkinsForAccount(_ account: MinecraftAccount) {
+        let dir = skinService.skinDirectory(for: account)
+        availableSkins = skinService.scanSkins(in: dir)
+    }
+
+    func importSkinFromPicker(sourceURL: URL, name: String, model: SkinInfo.SkinModel) {
+        do {
+            let skin = try skinService.importSkin(from: sourceURL, name: name, model: model)
+            availableSkins.append(skin)
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "皮肤已导入",
+                    severity: .info,
+                    summary: "皮肤 \(name) 已导入到皮肤库。",
+                    suggestedActions: []
+                ),
+                at: 0
+            )
+        } catch {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "皮肤导入失败",
+                    severity: .error,
+                    summary: error.localizedDescription,
+                    suggestedActions: ["检查文件格式是否为 PNG"]
+                ),
+                at: 0
+            )
+        }
+    }
+
+    func applySkin(_ skin: SkinInfo) {
+        guard var account = selectedAccount else { return }
+        account.appliedSkin = skin
+        if let index = accounts.firstIndex(where: { $0.id == account.id }) {
+            accounts[index] = account
+        }
+        diagnostics.insert(
+            DiagnosticReport(
+                title: "皮肤已应用",
+                severity: .info,
+                summary: "皮肤 \(skin.name) 将在下次启动时生效。",
+                suggestedActions: []
+            ),
+            at: 0
+        )
     }
 
     var selectedJavaRuntime: JavaRuntime? {
@@ -1290,6 +1347,111 @@ enum RepairPlanningError: LocalizedError, Equatable {
         case .missingVersionMetadata(let version):
             return "缺少 \(version) 的版本元数据。"
         }
+    }
+}
+
+// MARK: - Profile Export/Import
+
+extension LauncherStore {
+    private var profileExportService: ProfileExportServicing { ProfileExportService() }
+
+    func exportProfile(to url: URL) {
+        let settings = ProfileExportSettings(
+            defaultMemoryMegabytes: defaultMemoryMegabytes,
+            defaultOfflineUsername: defaultOfflineUsername,
+            preferredDownloadSource: preferredDownloadSource,
+            defaultResolutionWidth: defaultResolutionWidth,
+            defaultResolutionHeight: defaultResolutionHeight,
+            jvmPresets: jvmPresets
+        )
+        do {
+            let data = try profileExportService.exportProfile(
+                instances: instances,
+                accounts: accounts,
+                settings: settings
+            )
+            try profileExportService.saveExport(data, to: url)
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "配置已导出",
+                    severity: .info,
+                    summary: "已导出 \(instances.count) 个实例和 \(accounts.count) 个账号到 \(url.lastPathComponent)。",
+                    suggestedActions: []
+                ),
+                at: 0
+            )
+        } catch {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "导出失败",
+                    severity: .error,
+                    summary: error.localizedDescription,
+                    suggestedActions: ["检查磁盘空间和目录权限"]
+                ),
+                at: 0
+            )
+        }
+    }
+
+    func importProfile(from url: URL) {
+        do {
+            let data = try profileExportService.loadExport(from: url)
+            let export = try profileExportService.importProfile(from: data)
+
+            // Merge instances (skip duplicates by name)
+            let existingNames = Set(instances.map(\.name))
+            let newInstances = export.instances.filter { !existingNames.contains($0.name) }
+            instances.append(contentsOf: newInstances)
+
+            // Merge accounts (skip duplicates by uuid)
+            let existingUUIDs = Set(accounts.map(\.uuid))
+            let newAccounts = export.accounts.filter { !existingUUIDs.contains($0.uuid) }
+            accounts.append(contentsOf: newAccounts)
+
+            // Apply settings
+            defaultMemoryMegabytes = export.settings.defaultMemoryMegabytes
+            defaultOfflineUsername = export.settings.defaultOfflineUsername
+            preferredDownloadSource = export.settings.preferredDownloadSource
+            defaultResolutionWidth = export.settings.defaultResolutionWidth
+            defaultResolutionHeight = export.settings.defaultResolutionHeight
+            jvmPresets = export.settings.jvmPresets
+
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "配置已导入",
+                    severity: .info,
+                    summary: "导入了 \(newInstances.count) 个新实例和 \(newAccounts.count) 个新账号。",
+                    suggestedActions: []
+                ),
+                at: 0
+            )
+        } catch {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "导入失败",
+                    severity: .error,
+                    summary: error.localizedDescription,
+                    suggestedActions: ["检查文件格式是否正确"]
+                ),
+                at: 0
+            )
+        }
+    }
+}
+
+// MARK: - Custom Background
+
+extension LauncherStore {
+    func setBackgroundImage(_ url: URL?) {
+        backgroundImage.url = url
+    }
+
+    func setBackgroundOpacity(_ opacity: Double) {
+        backgroundImage.opacity = max(0, min(1, opacity))
+    }
+
+    func setBackgroundBlur(_ blur: CGFloat) {
+        backgroundImage.blurRadius = max(0, min(20, blur))
     }
 }
 

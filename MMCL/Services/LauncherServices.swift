@@ -583,6 +583,66 @@ enum DownloadExecutionError: LocalizedError, Equatable {
     }
 }
 
+protocol SkinServicing {
+    func scanSkins(in directory: URL) -> [SkinInfo]
+    func applySkin(_ skin: SkinInfo, to account: MinecraftAccount) throws
+    func importSkin(from sourceURL: URL, name: String, model: SkinInfo.SkinModel) throws -> SkinInfo
+    func skinDirectory(for account: MinecraftAccount) -> URL
+}
+
+struct SkinService: SkinServicing {
+    let applicationSupportDirectory: URL
+
+    init(applicationSupportDirectory: URL? = nil) {
+        self.applicationSupportDirectory = applicationSupportDirectory ?? FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0]
+    }
+
+    func skinDirectory(for account: MinecraftAccount) -> URL {
+        applicationSupportDirectory
+            .appendingPathComponent("MMCL", isDirectory: true)
+            .appendingPathComponent("Skins", isDirectory: true)
+            .appendingPathComponent(account.uuid, isDirectory: true)
+    }
+
+    func scanSkins(in directory: URL) -> [SkinInfo] {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        ) else { return [] }
+
+        return files
+            .filter { $0.pathExtension == "png" }
+            .compactMap { url in
+                let name = url.deletingPathExtension().lastPathComponent
+                let model: SkinInfo.SkinModel = name.lowercased().contains("alex") ? .alex : .steve
+                return SkinInfo(name: name, model: model, localFileURL: url)
+            }
+    }
+
+    func applySkin(_ skin: SkinInfo, to account: MinecraftAccount) throws {
+        // Skin application happens at launch via JVM arguments
+        // Store the skin info in the account's profile
+    }
+
+    func importSkin(from sourceURL: URL, name: String, model: SkinInfo.SkinModel) throws -> SkinInfo {
+        let destDir = applicationSupportDirectory
+            .appendingPathComponent("MMCL", isDirectory: true)
+            .appendingPathComponent("Skins", isDirectory: true)
+        try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
+
+        let destURL = destDir.appendingPathComponent("\(name).png")
+        if FileManager.default.fileExists(atPath: destURL.path) {
+            try FileManager.default.removeItem(at: destURL)
+        }
+        try FileManager.default.copyItem(at: sourceURL, to: destURL)
+
+        return SkinInfo(name: name, model: model, localFileURL: destURL)
+    }
+}
+
 protocol JavaRuntimeServicing {
     func bundledSearchLocations() -> [URL]
     func recommendedMajorVersion(for gameVersion: String) -> Int
@@ -1527,6 +1587,46 @@ struct AuthService: AuthServicing {
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         let (data, _) = try await URLSession.shared.data(for: request)
         return try JSONDecoder().decode(MicrosoftTokenResponse.self, from: data)
+    }
+}
+
+// MARK: - Profile Export/Import
+
+protocol ProfileExportServicing {
+    func exportProfile(
+        instances: [LauncherInstance],
+        accounts: [MinecraftAccount],
+        settings: ProfileExportSettings
+    ) throws -> Data
+    func importProfile(from data: Data) throws -> ProfileExportData
+    func saveExport(_ data: Data, to url: URL) throws
+    func loadExport(from url: URL) throws -> Data
+}
+
+struct ProfileExportService: ProfileExportServicing {
+    func exportProfile(
+        instances: [LauncherInstance],
+        accounts: [MinecraftAccount],
+        settings: ProfileExportSettings
+    ) throws -> Data {
+        let export = ProfileExportData(
+            instances: instances,
+            accounts: accounts,
+            settings: settings
+        )
+        return try JSONEncoder.mmcl.encode(export)
+    }
+
+    func importProfile(from data: Data) throws -> ProfileExportData {
+        try JSONDecoder.mmcl.decode(ProfileExportData.self, from: data)
+    }
+
+    func saveExport(_ data: Data, to url: URL) throws {
+        try data.write(to: url, options: .atomic)
+    }
+
+    func loadExport(from url: URL) throws -> Data {
+        try Data(contentsOf: url)
     }
 }
 

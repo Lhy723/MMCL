@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
 struct DownloadsView: View {
     @ObservedObject var store: LauncherStore
@@ -477,6 +479,68 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                }
+            }
+
+            Section("配置管理") {
+                Button {
+                    let panel = NSSavePanel()
+                    panel.allowedContentTypes = [.json]
+                    panel.nameFieldStringValue = "mmcl_profile_export.json"
+                    panel.begin { response in
+                        if response == .OK, let url = panel.url {
+                            store.exportProfile(to: url)
+                        }
+                    }
+                } label: {
+                    Label("导出配置", systemImage: "square.and.arrow.up")
+                }
+
+                Button {
+                    let panel = NSOpenPanel()
+                    panel.allowedContentTypes = [.json]
+                    panel.begin { response in
+                        if response == .OK, let url = panel.url {
+                            store.importProfile(from: url)
+                        }
+                    }
+                } label: {
+                    Label("导入配置", systemImage: "square.and.arrow.down")
+                }
+            }
+
+            Section("自定义背景") {
+                Button {
+                    let panel = NSOpenPanel()
+                    panel.allowedContentTypes = [.image]
+                    panel.begin { response in
+                        if response == .OK, let url = panel.url {
+                            store.setBackgroundImage(url)
+                        }
+                    }
+                } label: {
+                    Label(store.backgroundImage.url != nil ? "更换背景" : "选择背景图片", systemImage: "photo")
+                }
+
+                if store.backgroundImage.url != nil {
+                    Button("移除背景") {
+                        store.setBackgroundImage(nil)
+                    }
+                    .foregroundStyle(.red)
+
+                    Slider(value: Binding(
+                        get: { store.backgroundImage.opacity },
+                        set: { store.setBackgroundOpacity($0) }
+                    ), in: 0...1, step: 0.05) {
+                        Text("不透明度：\(Int(store.backgroundImage.opacity * 100))%")
+                    }
+
+                    Slider(value: Binding(
+                        get: { Float(store.backgroundImage.blurRadius) },
+                        set: { store.setBackgroundBlur(CGFloat($0)) }
+                    ), in: 0...20, step: 1) {
+                        Text("模糊半径：\(Int(store.backgroundImage.blurRadius))")
+                    }
                 }
             }
 
