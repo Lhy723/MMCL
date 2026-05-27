@@ -526,26 +526,78 @@ final class LauncherStore: ObservableObject {
     }
 
     func executeQueuedDownloads() async {
-        for index in downloadJobs.indices where downloadJobs[index].status == .queued {
-            do {
-                downloadJobs[index].status = .running
-                let completedJob = try await downloadService.execute(job: downloadJobs[index])
-                downloadJobs[index] = completedJob
-            } catch {
-                downloadJobs[index].status = .failed
-                diagnostics.insert(
-                    DiagnosticReport(
-                        title: "下载失败",
-                        severity: .error,
-                        summary: "\(downloadJobs[index].title)：\(error.localizedDescription)",
-                        suggestedActions: ["检查网络连接和下载源", "重新生成安装计划后重试"]
-                    ),
-                    at: 0
-                )
+        let queuedIndices = downloadJobs.indices.filter { downloadJobs[$0].status == .queued }
+        guard !queuedIndices.isEmpty else { return }
+
+        for index in queuedIndices {
+            downloadJobs[index].status = .running
+        }
+
+        await withTaskGroup(of: (Int, DownloadJob?).self) { group in
+            var activeTasks = 0
+            var nextIndex = 0
+
+            func startNext() -> Bool {
+                guard nextIndex < queuedIndices.count else { return false }
+                let index = queuedIndices[nextIndex]
+                nextIndex += 1
+                group.addTask { [self] in
+                    do {
+                        let completedJob = try await downloadService.execute(job: downloadJobs[index])
+                        return (index, completedJob)
+                    } catch {
+                        var failedJob = downloadJobs[index]
+                        failedJob.status = .failed
+                        return (index, failedJob)
+                    }
+                }
+                activeTasks += 1
+                return true
+            }
+
+            // Start initial batch (max 4)
+            for _ in 0..<min(4, queuedIndices.count) {
+                _ = startNext()
+            }
+
+            for await (index, result) in group {
+                activeTasks -= 1
+                if let result {
+                    downloadJobs[index] = result
+                    if result.status == .failed {
+                        diagnostics.insert(
+                            DiagnosticReport(
+                                title: "下载失败",
+                                severity: .error,
+                                summary: "\(result.title)：下载失败",
+                                suggestedActions: ["检查网络连接和下载源", "重新生成安装计划后重试"]
+                            ),
+                            at: 0
+                        )
+                    }
+                }
+                _ = startNext()
             }
         }
 
         finalizeDownloadedPlanIfPossible()
+    }
+
+    func cancelDownloads() {
+        for index in downloadJobs.indices {
+            if downloadJobs[index].status == .queued || downloadJobs[index].status == .running {
+                downloadJobs[index].status = .failed
+            }
+        }
+        diagnostics.insert(
+            DiagnosticReport(
+                title: "下载已取消",
+                severity: .info,
+                summary: "所有排队和进行中的下载任务已取消。",
+                suggestedActions: []
+            ),
+            at: 0
+        )
     }
 
     func prepareNativeLibrariesForSelectedInstance() {

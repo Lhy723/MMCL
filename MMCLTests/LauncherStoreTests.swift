@@ -433,6 +433,27 @@ final class LauncherStoreTests: XCTestCase {
         }
     }
 
+    func testCancelDownloadsMarksAllQueuedAndRunningAsFailed() {
+        let store = LauncherStore(
+            instances: [],
+            downloadJobs: [
+                DownloadJob(title: "A", source: .official, destination: URL(fileURLWithPath: "/tmp/a"), totalBytes: 100, status: .queued),
+                DownloadJob(title: "B", source: .official, destination: URL(fileURLWithPath: "/tmp/b"), totalBytes: 100, status: .running),
+                DownloadJob(title: "C", source: .official, destination: URL(fileURLWithPath: "/tmp/c"), totalBytes: 100, status: .completed),
+            ],
+            featuredProjects: [],
+            diagnostics: [],
+            javaRuntimes: [],
+            availableVersions: []
+        )
+
+        store.cancelDownloads()
+
+        XCTAssertEqual(store.downloadJobs[0].status, .failed)
+        XCTAssertEqual(store.downloadJobs[1].status, .failed)
+        XCTAssertEqual(store.downloadJobs[2].status, .completed)
+    }
+
     private static let versionMetadataJSON = """
     {
       "id": "1.21.5",

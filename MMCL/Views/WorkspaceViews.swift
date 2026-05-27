@@ -34,6 +34,13 @@ struct DownloadsView: View {
                 .disabled(!store.downloadJobs.contains { $0.status == .queued })
 
                 Button {
+                    store.cancelDownloads()
+                } label: {
+                    Label("取消", systemImage: "xmark.circle")
+                }
+                .disabled(!store.downloadJobs.contains { $0.status == .running })
+
+                Button {
                     store.expandSelectedInstanceAssetIndex()
                 } label: {
                     Label("展开资源", systemImage: "shippingbox")
