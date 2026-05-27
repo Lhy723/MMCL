@@ -433,6 +433,18 @@ final class LauncherStoreTests: XCTestCase {
         }
     }
 
+    func testLaunchSessionTrackingResetsOnExit() {
+        let store = LauncherStore(
+            instances: [],
+            downloadJobs: [],
+            featuredProjects: [],
+            diagnostics: [],
+            javaRuntimes: [],
+            availableVersions: []
+        )
+        XCTAssertNil(store.currentLaunchSession)
+    }
+
     func testCancelDownloadsMarksAllQueuedAndRunningAsFailed() {
         let store = LauncherStore(
             instances: [],

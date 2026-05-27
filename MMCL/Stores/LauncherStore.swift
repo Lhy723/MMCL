@@ -220,6 +220,7 @@ final class LauncherStore: ObservableObject {
         do {
             let session = try launchService.launch(instance: selectedInstance, java: selectedJavaRuntime)
             currentLaunchSession = session
+            monitorLaunchSession()
             diagnostics.insert(
                 DiagnosticReport(
                     title: "Minecraft 已启动",
@@ -652,6 +653,35 @@ final class LauncherStore: ObservableObject {
                 ),
                 at: 0
             )
+        }
+    }
+
+    func monitorLaunchSession() {
+        guard let session = currentLaunchSession else { return }
+        let pid = session.processIdentifier
+
+        Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] timer in
+            let result = kill(pid, 0)
+            if result != 0 {
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    timer.invalidate()
+                    let exitTime = Date()
+                    let duration = exitTime.timeIntervalSince(session.startedAt)
+                    let minutes = Int(duration) / 60
+                    let seconds = Int(duration) % 60
+                    self.currentLaunchSession = nil
+                    self.diagnostics.insert(
+                        DiagnosticReport(
+                            title: "Minecraft 已退出",
+                            severity: .info,
+                            summary: "进程 \(pid) 已退出，运行时长 \(minutes)分\(seconds)秒。日志：\(session.logFileURL.path)",
+                            suggestedActions: ["打开日志查看退出原因", "如果异常退出，检查 Java 版本和内存设置"]
+                        ),
+                        at: 0
+                    )
+                }
+            }
         }
     }
 
