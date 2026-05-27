@@ -116,6 +116,8 @@ struct ContentView: View {
             } else {
                 EmptyStateView(title: "皮肤管理", message: "从侧边栏选择皮肤管理。", systemImage: "figure.stand")
             }
+        case .serverList:
+            ServerListView(store: store)
         case .none:
             EmptyStateView(title: "欢迎使用 MMCL", message: "选择实例、下载中心或诊断日志开始。", systemImage: "gamecontroller")
         }

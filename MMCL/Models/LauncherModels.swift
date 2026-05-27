@@ -923,6 +923,32 @@ struct JVMPreset: Identifiable, Codable, Equatable {
     ]
 }
 
+// MARK: - Server List
+
+struct ServerInfo: Identifiable, Codable, Equatable {
+    var id: UUID = UUID()
+    var name: String
+    var address: String
+    var port: Int = 25565
+    var isFavorite: Bool = false
+    var lastPingedAt: Date?
+    var pingResult: ServerPingResult?
+
+    var fullAddress: String {
+        if port == 25565 { return address }
+        return "\(address):\(port)"
+    }
+
+    struct ServerPingResult: Codable, Equatable {
+        var motd: String
+        var playerCount: Int
+        var maxPlayers: Int
+        var versionName: String
+        var pingMs: Int
+        var iconData: Data?
+    }
+}
+
 // MARK: - Profile Import/Export
 
 struct ProfileExportData: Codable {

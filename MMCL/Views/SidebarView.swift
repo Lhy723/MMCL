@@ -38,6 +38,18 @@ struct SidebarView: View {
                     .tag(LauncherStore.Section.curseforge)
                 Label("诊断日志", systemImage: "stethoscope")
                     .tag(LauncherStore.Section.diagnostics)
+                Button {
+                    store.selectedSection = .skin
+                    store.showingSkinPicker = true
+                } label: {
+                    Label("皮肤管理", systemImage: "figure.stand")
+                }
+                Button {
+                    store.selectedSection = .serverList
+                    store.showingServerList = true
+                } label: {
+                    Label("服务器列表", systemImage: "server.rack")
+                }
             }
         }
         .listStyle(.sidebar)

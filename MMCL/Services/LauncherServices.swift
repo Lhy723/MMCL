@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Network
 
 protocol InstanceServicing {
     var rootDirectory: URL { get }
@@ -1627,6 +1628,115 @@ struct ProfileExportService: ProfileExportServicing {
 
     func loadExport(from url: URL) throws -> Data {
         try Data(contentsOf: url)
+    }
+}
+
+// MARK: - Server List
+
+protocol ServerListServicing {
+    func loadServers(from url: URL) -> [ServerInfo]
+    func saveServers(_ servers: [ServerInfo], to url: URL) throws
+    func pingServer(address: String, port: Int) async -> ServerInfo.ServerPingResult?
+    func serverListFileURL(for instance: LauncherInstance) -> URL
+}
+
+struct ServerListService: ServerListServicing {
+    let applicationSupportDirectory: URL
+
+    init(applicationSupportDirectory: URL? = nil) {
+        self.applicationSupportDirectory = applicationSupportDirectory ?? FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0]
+    }
+
+    func serverListFileURL(for instance: LauncherInstance) -> URL {
+        instance.rootDirectory
+            .appendingPathComponent(".minecraft", isDirectory: true)
+            .appendingPathComponent("servers.json")
+    }
+
+    func loadServers(from url: URL) -> [ServerInfo] {
+        guard let data = try? Data(contentsOf: url),
+              let servers = try? JSONDecoder.mmcl.decode([ServerInfo].self, from: data) else {
+            return []
+        }
+        return servers
+    }
+
+    func saveServers(_ servers: [ServerInfo], to url: URL) throws {
+        let data = try JSONEncoder.mmcl.encode(servers)
+        let parentDir = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+    }
+
+    func pingServer(address: String, port: Int) async -> ServerInfo.ServerPingResult? {
+        let host = NWEndpoint.Host(address)
+        let portObj = NWEndpoint.Port(rawValue: UInt16(port))!
+        let connection = NWConnection(host: host, port: portObj, using: .tcp)
+
+        return await withCheckedContinuation { continuation in
+            let startTime = Date()
+            var didResume = false
+
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    let elapsed = Int(Date().timeIntervalSince(startTime) * 1000)
+                    // Simple ping - send a basic Minecraft server list ping
+                    var packet = Data()
+                    // Packet ID: 0x00 (Handshake)
+                    packet.append(0x01) // length
+                    packet.append(0x00) // packet id
+                    // Protocol version
+                    packet.append(contentsOf: [0xFF, 0x05]) // varint 762 (1.19.4)
+                    // Server address
+                    let addrData = address.utf8
+                    packet.append(UInt8(addrData.count))
+                    packet.append(contentsOf: addrData)
+                    // Server port
+                    packet.append(UInt8(port >> 8))
+                    packet.append(UInt8(port & 0xFF))
+                    // Next state: 1 (status)
+                    packet.append(0x01)
+
+                    connection.send(content: packet, completion: .contentProcessed { _ in
+                        // For a real implementation, we'd parse the response
+                        // For now, return a basic result indicating the server is reachable
+                        let result = ServerInfo.ServerPingResult(
+                            motd: "服务器可达",
+                            playerCount: 0,
+                            maxPlayers: 0,
+                            versionName: "未知",
+                            pingMs: elapsed
+                        )
+                        connection.cancel()
+                        continuation.resume(returning: result)
+                    })
+                case .failed:
+                    continuation.resume(returning: nil)
+                case .cancelled:
+                    if !didResume {
+                        didResume = true
+                        continuation.resume(returning: nil)
+                    }
+                default:
+                    break
+                }
+            }
+
+            connection.start(queue: .global())
+
+            // Timeout after 5 seconds
+            DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+                if !didResume {
+                    didResume = true
+                    connection.cancel()
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
     }
 }
 

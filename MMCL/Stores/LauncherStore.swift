@@ -9,6 +9,7 @@ final class LauncherStore: ObservableObject {
         case curseforge
         case diagnostics
         case skin
+        case serverList
     }
 
     @Published var instances: [LauncherInstance]
@@ -38,6 +39,10 @@ final class LauncherStore: ObservableObject {
     @Published var availableSkins: [SkinInfo] = []
     @Published var showingSkinPicker: Bool = false
 
+    @Published var serverList: [ServerInfo] = []
+    @Published var showingServerList: Bool = false
+    @Published var editingServer: ServerInfo?
+
     @Published var accounts: [MinecraftAccount] = []
     @Published var selectedAccountID: MinecraftAccount.ID?
     @Published var isLoggingIn = false
@@ -54,6 +59,8 @@ final class LauncherStore: ObservableObject {
     let currentVersion = "0.1.0"
     @Published var latestVersion: String?
     @Published var updateAvailable = false
+    @Published var updateDownloadURL: URL?
+    @Published var isDownloadingUpdate: Bool = false
 
     @Published var colorScheme: AppColorScheme = .system
     @Published var appLanguage: AppLanguage = .chinese
@@ -61,6 +68,8 @@ final class LauncherStore: ObservableObject {
     @Published var backgroundImage: BackgroundImage = BackgroundImage()
 
     let speedTracker = DownloadSpeedTracker()
+    private var queuedDownloadIDs: [UUID] = []
+    private var activeDownloadCount: Int = 0
 
     private let launchService: LaunchServicing
     private let downloadService: DownloadServicing
@@ -76,6 +85,7 @@ final class LauncherStore: ObservableObject {
     private let authService: AuthServicing
     private let diagnosticService: DiagnosticServicing
     private let skinService: SkinServicing
+    private let serverListService: ServerListServicing
 
     init(
         instances: [LauncherInstance] = LauncherStore.sampleInstances,
@@ -98,7 +108,8 @@ final class LauncherStore: ObservableObject {
         curseForgeService: CurseForgeServicing = CurseForgeService(),
         authService: AuthServicing = AuthService(),
         diagnosticService: DiagnosticServicing = DiagnosticService(),
-        skinService: SkinServicing = SkinService()
+        skinService: SkinServicing = SkinService(),
+        serverListService: ServerListServicing = ServerListService()
     ) {
         self.instances = instances
         self.downloadJobs = downloadJobs
@@ -121,6 +132,7 @@ final class LauncherStore: ObservableObject {
         self.authService = authService
         self.diagnosticService = diagnosticService
         self.skinService = skinService
+        self.serverListService = serverListService
         self.selectedJavaRuntimeID = javaRuntimes.first?.id
         self.selectedSection = instances.first.map { .instance($0.id) } ?? .downloads
     }
@@ -453,7 +465,84 @@ final class LauncherStore: ObservableObject {
             at: 0
         )
     }
+}
 
+// MARK: - Server List
+
+extension LauncherStore {
+    func loadServerList(for instance: LauncherInstance) {
+        let url = serverListService.serverListFileURL(for: instance)
+        serverList = serverListService.loadServers(from: url)
+    }
+
+    func saveServerList(for instance: LauncherInstance) {
+        let url = serverListService.serverListFileURL(for: instance)
+        do {
+            try serverListService.saveServers(serverList, to: url)
+        } catch {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "服务器列表保存失败",
+                    severity: .error,
+                    summary: error.localizedDescription,
+                    suggestedActions: []
+                ),
+                at: 0
+            )
+        }
+    }
+
+    func addServer(name: String, address: String, port: Int = 25565, for instance: LauncherInstance) {
+        let server = ServerInfo(name: name, address: address, port: port)
+        serverList.append(server)
+        saveServerList(for: instance)
+    }
+
+    func updateServer(_ server: ServerInfo, for instance: LauncherInstance) {
+        if let index = serverList.firstIndex(where: { $0.id == server.id }) {
+            serverList[index] = server
+            saveServerList(for: instance)
+        }
+    }
+
+    func deleteServer(_ server: ServerInfo, for instance: LauncherInstance) {
+        serverList.removeAll { $0.id == server.id }
+        saveServerList(for: instance)
+    }
+
+    func toggleServerFavorite(_ server: ServerInfo, for instance: LauncherInstance) {
+        if let index = serverList.firstIndex(where: { $0.id == server.id }) {
+            serverList[index].isFavorite.toggle()
+            saveServerList(for: instance)
+        }
+    }
+
+    func pingServer(_ server: ServerInfo) {
+        Task {
+            if let result = await serverListService.pingServer(
+                address: server.address,
+                port: server.port
+            ) {
+                if let index = serverList.firstIndex(where: { $0.id == server.id }) {
+                    serverList[index].pingResult = result
+                    serverList[index].lastPingedAt = Date()
+                }
+            } else {
+                if let index = serverList.firstIndex(where: { $0.id == server.id }) {
+                    serverList[index].pingResult = nil
+                }
+            }
+        }
+    }
+
+    func pingAllServers() {
+        for server in serverList {
+            pingServer(server)
+        }
+    }
+}
+
+extension LauncherStore {
     var selectedJavaRuntime: JavaRuntime? {
         guard let selectedJavaRuntimeID else { return javaRuntimes.first }
         return javaRuntimes.first { $0.id == selectedJavaRuntimeID } ?? javaRuntimes.first
@@ -898,9 +987,6 @@ final class LauncherStore: ObservableObject {
         }
     }
 
-    @Published var updateDownloadURL: URL?
-    @Published var isDownloadingUpdate: Bool = false
-
     func downloadAndInstallUpdate() async {
         guard let downloadURL = updateDownloadURL else { return }
         isDownloadingUpdate = true
@@ -1121,9 +1207,6 @@ final class LauncherStore: ObservableObject {
         }
         queuedDownloadIDs = Array(queuedIDs.dropFirst(started))
     }
-
-    private var queuedDownloadIDs: [UUID] = []
-    private var activeDownloadCount: Int = 0
 
     func startNextQueuedDownloadIfNeeded() {
         guard !queuedDownloadIDs.isEmpty else { return }
