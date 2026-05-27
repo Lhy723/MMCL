@@ -162,6 +162,16 @@ struct InstanceDetailView: View {
                 } label: {
                     Label("打开日志", systemImage: "doc.text.magnifyingglass")
                 }
+
+                if instance.loader == .fabric {
+                    Button {
+                        Task {
+                            await store.installFabricLoader(for: instance)
+                        }
+                    } label: {
+                        Label("安装 Fabric", systemImage: "shippingbox")
+                    }
+                }
             }
 
             if let session = store.currentLaunchSession {

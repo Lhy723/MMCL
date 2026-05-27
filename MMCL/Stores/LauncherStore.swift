@@ -33,6 +33,7 @@ final class LauncherStore: ObservableObject {
     private let versionService: VersionManifestServicing
     private let javaRuntimeService: JavaRuntimeServicing
     private let instanceService: InstanceServicing
+    private let fabricService: FabricServicing
 
     init(
         instances: [LauncherInstance] = LauncherStore.sampleInstances,
@@ -46,7 +47,8 @@ final class LauncherStore: ObservableObject {
         downloadService: DownloadServicing = DownloadService(),
         versionService: VersionManifestServicing = VersionManifestService(),
         javaRuntimeService: JavaRuntimeServicing = JavaRuntimeService(),
-        instanceService: InstanceServicing = InstanceService()
+        instanceService: InstanceServicing = InstanceService(),
+        fabricService: FabricServicing = FabricService()
     ) {
         self.instances = instances
         self.downloadJobs = downloadJobs
@@ -60,6 +62,7 @@ final class LauncherStore: ObservableObject {
         self.versionService = versionService
         self.javaRuntimeService = javaRuntimeService
         self.instanceService = instanceService
+        self.fabricService = fabricService
         self.selectedJavaRuntimeID = javaRuntimes.first?.id
         self.selectedSection = instances.first.map { .instance($0.id) } ?? .downloads
     }
@@ -411,6 +414,47 @@ final class LauncherStore: ObservableObject {
             at: 0
         )
         selectedSection = .downloads
+    }
+
+    func installFabricLoader(for instance: LauncherInstance) async {
+        do {
+            let metadata = try await fabricService.installFabric(
+                gameVersion: instance.gameVersion,
+                loaderVersion: nil,
+                instance: instance
+            )
+            plannedVersionMetadata = metadata
+            plannedInstanceID = instance.id
+
+            // Generate install jobs for the new metadata
+            let jobs = downloadService.makeVanillaInstallJobs(
+                metadata: metadata,
+                instance: instance,
+                source: selectedDownloadSource
+            )
+            downloadJobs = jobs
+            updateInstanceStatus(instance.id, status: .missingFiles)
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "Fabric loader 已安装",
+                    severity: .info,
+                    summary: "已为 \(instance.name) 安装 Fabric loader，生成 \(jobs.count) 个下载任务。",
+                    suggestedActions: ["打开下载中心执行任务", "下载完成后启动游戏"]
+                ),
+                at: 0
+            )
+            selectedSection = .downloads
+        } catch {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "Fabric loader 安装失败",
+                    severity: .error,
+                    summary: error.localizedDescription,
+                    suggestedActions: ["确认已安装基础版本", "检查网络连接"]
+                ),
+                at: 0
+            )
+        }
     }
 
     func refreshAvailableVersions() async {
