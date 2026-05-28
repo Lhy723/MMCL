@@ -53,6 +53,7 @@ struct ContentView: View {
         }
         .onAppear {
             store.selectFirstInstanceIfNeeded()
+            Task { await store.refreshJavaRuntimes() }
         }
         .sheet(isPresented: $store.showingCreateSheet) {
             InstanceCreateSheet(store: store)
