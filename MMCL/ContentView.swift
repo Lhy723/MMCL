@@ -111,11 +111,7 @@ struct ContentView: View {
         case .diagnostics:
             DiagnosticsView(store: store)
         case .skin:
-            if store.showingSkinPicker {
-                SkinPickerView(store: store)
-            } else {
-                EmptyStateView(title: "皮肤管理", message: "从侧边栏选择皮肤管理。", systemImage: "figure.stand")
-            }
+            SkinPickerView(store: store)
         case .serverList:
             ServerListView(store: store)
         case .none:
