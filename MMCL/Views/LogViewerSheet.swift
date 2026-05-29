@@ -5,6 +5,7 @@ struct LogViewerSheet: View {
     @ObservedObject var store: LauncherStore
     @State private var logContent: String = ""
     @State private var timer: Timer?
+    @State private var appeared = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -57,6 +58,13 @@ struct LogViewerSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 700, height: 500)
+        .frame(width: 700, height: 500, alignment: .top)
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared ? 0 : 8)
+        .onAppear {
+            withAnimation(.mmclSpring(response: 0.4, dampingFraction: 0.85, scale: store.animationDurationScale)) {
+                appeared = true
+            }
+        }
     }
 }

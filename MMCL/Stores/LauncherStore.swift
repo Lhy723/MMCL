@@ -1,15 +1,16 @@
 import Combine
 import Foundation
+import AppKit
 
+@MainActor
 final class LauncherStore: ObservableObject {
     enum Section: Hashable {
-        case instance(UUID)
+        case launcher
         case downloads
-        case content
-        case curseforge
         case diagnostics
         case skin
         case serverList
+        case settings
     }
 
     @Published var instances: [LauncherInstance]
@@ -19,7 +20,9 @@ final class LauncherStore: ObservableObject {
     @Published var javaRuntimes: [JavaRuntime]
     @Published var availableVersions: [MinecraftVersion]
     @Published var selectedSection: Section?
+    @Published var launcherSelectedInstanceID: LauncherInstance.ID?
     @Published var selectedDownloadSource: DownloadSource
+    @Published var selectedDownloadTab: DownloadTabType = .vanilla
     @Published var selectedJavaRuntimeID: JavaRuntime.ID?
     @Published var currentLaunchSession: LaunchSession?
     @Published var plannedVersionMetadata: VersionMetadata?
@@ -29,19 +32,43 @@ final class LauncherStore: ObservableObject {
     @Published var defaultOfflineUsername: String = "Steve"
     @Published var defaultResolutionWidth: Int = 854
     @Published var defaultResolutionHeight: Int = 480
+    @Published var isScanningJava: Bool = false
+    @Published var isInstallingJDK = false
+    @Published var jdkInstallProgress: Double = 0
     @Published var preferredDownloadSource: DownloadSource = .bmclapi
+
+    // Download & community settings
+    @Published var fileDownloadSourceMode: FileDownloadSourceMode = .officialWithFallback
+    @Published var versionListSourceMode: VersionListSourceMode = .officialWithFallback
+    @Published var maxDownloadThreads: Int = 64
+    @Published var downloadSpeedLimit: Int = 0 // 0 = unlimited, KB/s
+    @Published var communitySourceMode: CommunitySourceMode = .preferOfficial
+    @Published var curseForgeApiKey: String = ""
+    @Published var filenameFormat: FilenameFormat = .bracketEN
+    @Published var modListDisplayStyle: ModListDisplayStyle = .titleTranslationDetailFilename
+
+    // Launch settings
+    @Published var versionIsolation: VersionIsolation = .moddableAndSnapshots
+    @Published var gameWindowTitle: String = ""
+    @Published var customInfo: String = ""
+    @Published var launcherVisibility: LauncherVisibility = .keep
+    @Published var processPriority: ProcessPriority = .normal
+    @Published var windowSizeMode: WindowSizeMode = .default
+    @Published var gameArguments: String = ""
+    @Published var preLaunchCommand: String = ""
+    @Published var useHighPerformanceGPU: Bool = false
+    @Published var memoryAutoConfig: Bool = true
+    @Published var customJavaPath: String = ""
     @Published var showingCreateSheet: Bool = false
     @Published var showingLogSheet: Bool = false
     @Published var showingRenameSheet: Bool = false
     @Published var showingModList: Bool = false
     @Published var showingResourcePacks: Bool = false
     @Published var showingShaderPacks: Bool = false
+    @Published var selectedInstanceSettingsID: LauncherInstance.ID?
+    @Published var showingJDKInstall: Bool = false
     @Published var availableSkins: [SkinInfo] = []
-    @Published var showingSkinPicker: Bool = false
-
     @Published var serverList: [ServerInfo] = []
-    @Published var showingServerList: Bool = false
-    @Published var editingServer: ServerInfo?
 
     @Published var accounts: [MinecraftAccount] = []
     @Published var selectedAccountID: MinecraftAccount.ID?
@@ -56,6 +83,16 @@ final class LauncherStore: ObservableObject {
     @Published var curseForgeResults: [CurseForgeSearchResult] = []
     @Published var curseForgeSearchQuery: String = ""
 
+    var portableJDKDirectory: URL { javaRuntimeService.portableJDKDirectory }
+
+    let githubRepoURL = "https://github.com/Lhy723/MMCL"
+
+    func openGitHubRepo() {
+        if let url = URL(string: githubRepoURL) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     let currentVersion = "0.1.0"
     @Published var latestVersion: String?
     @Published var updateAvailable = false
@@ -66,10 +103,34 @@ final class LauncherStore: ObservableObject {
     @Published var appLanguage: AppLanguage = .chinese
     @Published var jvmPresets: [JVMPreset] = JVMPreset.defaults
     @Published var backgroundImage: BackgroundImage = BackgroundImage()
+    @Published var animationDurationScale: Double = 1.0
 
     let speedTracker = DownloadSpeedTracker()
     private var queuedDownloadIDs: [UUID] = []
     private var activeDownloadCount: Int = 0
+
+    var taskGroups: [DownloadTaskGroup] {
+        let grouped = Dictionary(grouping: downloadJobs) { $0.taskGroupID ?? $0.id }
+        return grouped.map { key, jobs in
+            DownloadTaskGroup(
+                id: key,
+                name: jobs.first?.taskGroupName ?? jobs.first?.title ?? "未知任务",
+                jobs: jobs
+            )
+        }
+        .sorted { a, b in
+            let order: (DownloadStatus) -> Int = { s in
+                switch s {
+                case .running: return 0
+                case .paused: return 1
+                case .queued: return 2
+                case .failed: return 3
+                case .completed: return 4
+                }
+            }
+            return order(a.status) < order(b.status)
+        }
+    }
 
     private let launchService: LaunchServicing
     private let downloadService: DownloadServicing
@@ -88,13 +149,13 @@ final class LauncherStore: ObservableObject {
     private let serverListService: ServerListServicing
 
     init(
-        instances: [LauncherInstance] = LauncherStore.sampleInstances,
-        downloadJobs: [DownloadJob] = LauncherStore.sampleDownloadJobs,
-        featuredProjects: [ContentProject] = LauncherStore.sampleProjects,
-        diagnostics: [DiagnosticReport] = LauncherStore.sampleDiagnostics,
+        instances: [LauncherInstance] = [],
+        downloadJobs: [DownloadJob] = [],
+        featuredProjects: [ContentProject] = [],
+        diagnostics: [DiagnosticReport] = [],
         selectedDownloadSource: DownloadSource = .bmclapi,
-        javaRuntimes: [JavaRuntime] = LauncherStore.sampleJavaRuntimes,
-        availableVersions: [MinecraftVersion] = LauncherStore.sampleVersions,
+        javaRuntimes: [JavaRuntime] = [],
+        availableVersions: [MinecraftVersion] = [],
         launchService: LaunchServicing = LaunchService(),
         downloadService: DownloadServicing = DownloadService(),
         versionService: VersionManifestServicing = VersionManifestService(),
@@ -111,7 +172,11 @@ final class LauncherStore: ObservableObject {
         skinService: SkinServicing = SkinService(),
         serverListService: ServerListServicing = ServerListService()
     ) {
-        self.instances = instances
+        if instances.isEmpty {
+            self.instances = (try? instanceService.loadAllInstances()) ?? []
+        } else {
+            self.instances = instances
+        }
         self.downloadJobs = downloadJobs
         self.featuredProjects = featuredProjects
         self.diagnostics = diagnostics
@@ -134,17 +199,61 @@ final class LauncherStore: ObservableObject {
         self.skinService = skinService
         self.serverListService = serverListService
         self.selectedJavaRuntimeID = javaRuntimes.first?.id
-        self.selectedSection = instances.first.map { .instance($0.id) } ?? .downloads
+        self.selectedSection = .launcher
+
+        // Restore last selected instance
+        if let savedID = UserDefaults.standard.string(forKey: "lastSelectedInstanceID"),
+           let uuid = UUID(uuidString: savedID),
+           instances.contains(where: { $0.id == uuid }) {
+            self.launcherSelectedInstanceID = uuid
+        } else {
+            self.launcherSelectedInstanceID = instances.first?.id
+        }
+
+        // Load persisted accounts; create default offline if none
+        let loaded = Self.loadAccountsFromDisk()
+        if loaded.isEmpty {
+            let defaultAccount = MinecraftAccount(username: defaultOfflineUsername, type: .offline)
+            self.accounts = [defaultAccount]
+            self.selectedAccountID = defaultAccount.id
+            Self.saveAccountsToDisk([defaultAccount])
+        } else {
+            self.accounts = loaded
+            self.selectedAccountID = loaded.first?.id
+        }
     }
 
     var selectedInstance: LauncherInstance? {
-        guard case .instance(let id) = selectedSection else { return nil }
+        guard let id = launcherSelectedInstanceID else { return nil }
         return instances.first { $0.id == id }
+    }
+
+    func verifyInstanceStatuses() {
+        let fm = FileManager.default
+        for index in instances.indices {
+            let mcDir = instances[index].rootDirectory.appendingPathComponent(".minecraft")
+            let versionsDir = mcDir.appendingPathComponent("versions")
+            let hasMinecraftDir = fm.fileExists(atPath: mcDir.path)
+            let hasVersionsDir = fm.fileExists(atPath: versionsDir.path)
+
+            let correctStatus: InstanceStatus
+            if hasMinecraftDir && hasVersionsDir {
+                correctStatus = .ready
+            } else {
+                correctStatus = .notInstalled
+            }
+
+            if instances[index].status != correctStatus {
+                instances[index].status = correctStatus
+                persistInstance(at: index)
+            }
+        }
     }
 
     func selectFirstInstanceIfNeeded() {
         if selectedSection == nil {
-            selectedSection = instances.first.map { .instance($0.id) }
+            selectedSection = .launcher
+            launcherSelectedInstanceID = instances.first?.id
         }
     }
 
@@ -173,6 +282,7 @@ final class LauncherStore: ObservableObject {
                 accounts.append(account)
             }
             selectedAccountID = account.id
+            Self.saveAccountsToDisk(accounts)
             isLoggingIn = false
             deviceCodeMessage = ""
             diagnostics.insert(
@@ -203,12 +313,46 @@ final class LauncherStore: ObservableObject {
         let account = MinecraftAccount(username: username, type: .offline)
         accounts.append(account)
         selectedAccountID = account.id
+        Self.saveAccountsToDisk(accounts)
     }
 
     func deleteAccount(_ account: MinecraftAccount) {
         accounts.removeAll { $0.id == account.id }
         if selectedAccountID == account.id {
             selectedAccountID = accounts.first?.id
+        }
+        Self.saveAccountsToDisk(accounts)
+    }
+
+    func updateAccountUsername(_ account: MinecraftAccount, newUsername: String) {
+        guard let index = accounts.firstIndex(where: { $0.id == account.id }) else { return }
+        accounts[index].username = newUsername
+        Self.saveAccountsToDisk(accounts)
+    }
+
+    // MARK: - Account Persistence
+
+    private static var accountsDirectoryURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("MMCL", isDirectory: true)
+    }
+
+    private static var accountsFileURL: URL {
+        accountsDirectoryURL.appendingPathComponent("accounts.json")
+    }
+
+    static func loadAccountsFromDisk() -> [MinecraftAccount] {
+        let url = accountsFileURL
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        return (try? JSONDecoder.mmcl.decode([MinecraftAccount].self, from: data)) ?? []
+    }
+
+    static func saveAccountsToDisk(_ accounts: [MinecraftAccount]) {
+        let url = accountsFileURL
+        let dir = accountsDirectoryURL
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder.mmcl.encode(accounts) {
+            try? data.write(to: url, options: .atomic)
         }
     }
 
@@ -240,7 +384,8 @@ final class LauncherStore: ObservableObject {
                 profile: profile
             )
             instances.append(instance)
-            selectedSection = .instance(instance.id)
+            selectedSection = .launcher
+            launcherSelectedInstanceID = instance.id
             showingCreateSheet = false
             diagnostics.insert(
                 DiagnosticReport(
@@ -292,8 +437,8 @@ final class LauncherStore: ObservableObject {
             }
         }
         instances.removeAll { $0.id == instance.id }
-        if case .instance(let id) = selectedSection, id == instance.id {
-            selectedSection = instances.first.map { .instance($0.id) } ?? .downloads
+        if launcherSelectedInstanceID == instance.id {
+            launcherSelectedInstanceID = instances.first?.id
         }
         diagnostics.insert(
             DiagnosticReport(
@@ -310,12 +455,22 @@ final class LauncherStore: ObservableObject {
         guard !newName.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         guard let index = instances.firstIndex(where: { $0.id == instance.id }) else { return }
         instances[index].name = newName
+        persistInstance(at: index)
+    }
+
+    func saveInstanceProfile(_ instance: LauncherInstance, profile: LaunchProfile) {
+        guard let index = instances.firstIndex(where: { $0.id == instance.id }) else { return }
+        instances[index].profile = profile
+        persistInstance(at: index)
+    }
+
+    private func persistInstance(at index: Int) {
         do {
             let data = try instanceService.encode(instances[index])
             try data.write(to: instanceService.instanceFileURL(for: instances[index]), options: .atomic)
         } catch {
             diagnostics.insert(
-                DiagnosticReport(title: "重命名失败", severity: .error, summary: error.localizedDescription, suggestedActions: ["检查文件权限"]),
+                DiagnosticReport(title: "保存失败", severity: .error, summary: error.localizedDescription, suggestedActions: ["检查文件权限"]),
                 at: 0
             )
         }
@@ -338,7 +493,8 @@ final class LauncherStore: ObservableObject {
                 profile: profile
             )
             instances.append(copy)
-            selectedSection = .instance(copy.id)
+            selectedSection = .launcher
+            launcherSelectedInstanceID = copy.id
             diagnostics.insert(
                 DiagnosticReport(title: "实例已复制", severity: .info, summary: "\(instance.name) 已复制为 \(newName)。", suggestedActions: []),
                 at: 0
@@ -703,7 +859,7 @@ extension LauncherStore {
                 ),
                 at: 0
             )
-            selectedSection = jobs.isEmpty ? .instance(selectedInstance.id) : .downloads
+            selectedSection = jobs.isEmpty ? .launcher : .downloads
         } catch {
             diagnostics.insert(
                 DiagnosticReport(
@@ -718,6 +874,8 @@ extension LauncherStore {
     }
 
     func refreshJavaRuntimes() async {
+        isScanningJava = true
+        defer { isScanningJava = false }
         do {
             let runtimes = try await javaRuntimeService.discoverInstalledRuntimes()
             javaRuntimes = runtimes
@@ -732,12 +890,102 @@ extension LauncherStore {
                 at: 0
             )
         } catch {
+            javaRuntimes = []
+            selectedJavaRuntimeID = nil
             diagnostics.insert(
                 DiagnosticReport(
                     title: "Java 扫描失败",
                     severity: .error,
                     summary: error.localizedDescription,
                     suggestedActions: ["确认 /usr/libexec/java_home 可用", "手动安装 Java 后重试"]
+                ),
+                at: 0
+            )
+        }
+    }
+
+    // MARK: - Portable JDK Install
+
+    func installJDK(majorVersion: Int) async {
+        isInstallingJDK = true
+        jdkInstallProgress = 0
+        defer { isInstallingJDK = false }
+
+        let archString: String
+        #if arch(arm64)
+        archString = "aarch64"
+        #else
+        archString = "x64"
+        #endif
+
+        let downloadURL = URL(string: "https://api.adoptium.net/v3/binary/latest/\(majorVersion)/ga/mac/\(archString)/jdk/hotspot/normal/eclipse?project=jdk")!
+        let targetDir = javaRuntimeService.portableJDKDirectory
+        let fileManager = FileManager.default
+
+        do {
+            try fileManager.createDirectory(at: targetDir, withIntermediateDirectories: true)
+            let tarFile = targetDir.appendingPathComponent("jdk-\(majorVersion).tar.gz")
+
+            // Download to temp, then move
+            let (tempURL, _) = try await URLSession.shared.download(from: downloadURL)
+            try? fileManager.removeItem(at: tarFile)
+            try fileManager.moveItem(at: tempURL, to: tarFile)
+
+            jdkInstallProgress = 0.6
+
+            // Extract
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+            process.arguments = ["xzf", tarFile.path, "-C", targetDir.path]
+            let pipe = Pipe()
+            process.standardError = pipe
+            try process.run()
+            process.waitUntilExit()
+
+            // Cleanup tar
+            try? fileManager.removeItem(at: tarFile)
+
+            jdkInstallProgress = 1.0
+
+            // Rescan
+            await refreshJavaRuntimes()
+
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "Java \(majorVersion) 安装完成",
+                    severity: .info,
+                    summary: "便携版 JDK \(majorVersion) 已安装到 \(targetDir.path)",
+                    suggestedActions: []
+                ),
+                at: 0
+            )
+        } catch {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "Java 安装失败",
+                    severity: .error,
+                    summary: error.localizedDescription,
+                    suggestedActions: ["检查网络连接", "重试"]
+                ),
+                at: 0
+            )
+        }
+    }
+
+    func removePortableJDK(at url: URL) {
+        let fileManager = FileManager.default
+        // Find the JDK directory from the executable URL (go up to bin, then to JDK root)
+        let jdkHome = url.deletingLastPathComponent().deletingLastPathComponent()
+        do {
+            try fileManager.removeItem(at: jdkHome)
+            Task { await refreshJavaRuntimes() }
+        } catch {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "删除 Java 失败",
+                    severity: .error,
+                    summary: error.localizedDescription,
+                    suggestedActions: []
                 ),
                 at: 0
             )
@@ -775,10 +1023,14 @@ extension LauncherStore {
             source: selectedDownloadSource
         )
         if let assetIndex {
+            let groupID = jobs.first?.taskGroupID
+            let groupName = jobs.first?.taskGroupName
             jobs.append(contentsOf: downloadService.makeAssetObjectJobs(
                 assetIndex: assetIndex,
                 instance: instance,
-                source: selectedDownloadSource
+                source: selectedDownloadSource,
+                taskGroupID: groupID,
+                taskGroupName: groupName
             ))
         }
         downloadJobs = jobs
@@ -924,7 +1176,7 @@ extension LauncherStore {
             return
         }
         do {
-            let response = try await modrinthService.search(query: query, facets: nil)
+            let response = try await modrinthService.search(query: query, facets: nil, index: "relevance", offset: 0)
             modrinthSearchResults = response.hits
         } catch {
             diagnostics.insert(
@@ -946,7 +1198,7 @@ extension LauncherStore {
             return
         }
         do {
-            curseForgeResults = try await curseForgeService.search(query: query, gameVersion: selectedInstance?.gameVersion)
+            curseForgeResults = try await curseForgeService.search(query: query, classId: nil, gameVersion: selectedInstance?.gameVersion, apiKey: curseForgeApiKey)
         } catch {
             diagnostics.insert(
                 DiagnosticReport(title: "CurseForge 搜索失败", severity: .error, summary: error.localizedDescription, suggestedActions: []),
@@ -956,7 +1208,7 @@ extension LauncherStore {
     }
 
     func checkForUpdates() async {
-        guard let url = URL(string: "https://api.github.com/repos/your-repo/MMCL/releases/latest") else { return }
+        guard let url = URL(string: "https://api.github.com/repos/Lhy723/MMCL/releases/latest") else { return }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -1030,6 +1282,48 @@ extension LauncherStore {
         }
     }
 
+    func runDiagnostics() async {
+        diagnostics.removeAll()
+
+        let runtime = selectedJavaRuntime
+
+        for instance in instances {
+            // Check Java version mismatch
+            if let runtime {
+                if let report = diagnosticService.javaMismatch(instance: instance, runtime: runtime) {
+                    diagnostics.append(report)
+                }
+            }
+
+            // Analyze crash logs
+            if let report = diagnosticService.analyzeLatestCrash(instance: instance) {
+                diagnostics.append(report)
+            }
+        }
+
+        // Check for missing instances directory
+        let instancesDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("MMCL/Instances", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: instancesDir.path) {
+            diagnostics.append(DiagnosticReport(
+                title: "实例目录不存在",
+                severity: .warning,
+                summary: "实例目录 \(instancesDir.path) 不存在，将自动创建。",
+                suggestedActions: ["无需操作，启动器会自动创建"]
+            ))
+            try? FileManager.default.createDirectory(at: instancesDir, withIntermediateDirectories: true)
+        }
+
+        if diagnostics.isEmpty {
+            diagnostics.append(DiagnosticReport(
+                title: "一切正常",
+                severity: .info,
+                summary: "未发现任何问题。\(instances.count) 个实例状态良好。",
+                suggestedActions: []
+            ))
+        }
+    }
+
     func installModrinthMod(version: ModrinthVersion, file: ModrinthFile, for instance: LauncherInstance) async {
         let modsDir = instance.rootDirectory.appendingPathComponent("mods", isDirectory: true)
         let destination = modsDir.appendingPathComponent(file.filename)
@@ -1091,10 +1385,14 @@ extension LauncherStore {
     func expandAssetIndexDownloads(assetIndexURL: URL, for instance: LauncherInstance) throws {
         let data = try Data(contentsOf: assetIndexURL)
         let assetIndex = try versionService.decodeAssetIndex(from: data)
+        let groupID = UUID()
+        let groupName = "\(instance.name) 资源文件"
         let assetJobs = downloadService.makeAssetObjectJobs(
             assetIndex: assetIndex,
             instance: instance,
-            source: selectedDownloadSource
+            source: selectedDownloadSource,
+            taskGroupID: groupID,
+            taskGroupName: groupName
         )
         downloadJobs = assetJobs
         diagnostics.insert(
@@ -1167,6 +1465,7 @@ extension LauncherStore {
                 }
                 self.speedTracker.addBytes(completedJob.totalBytes)
                 self.activeDownloadCount -= 1
+                self.startNextQueuedDownloadIfNeeded()
                 if self.activeDownloadCount <= 0 {
                     self.finalizeDownloadedPlanIfPossible()
                 }
@@ -1189,27 +1488,29 @@ extension LauncherStore {
                     at: 0
                 )
                 self.activeDownloadCount -= 1
+                self.startNextQueuedDownloadIfNeeded()
                 if self.activeDownloadCount <= 0 {
                     self.finalizeDownloadedPlanIfPossible()
                 }
             }
         }
 
-        activeDownloadCount = queuedIDs.count
         var started = 0
         for id in queuedIDs {
             if let index = downloadJobs.firstIndex(where: { $0.id == id }) {
                 downloadJobs[index].status = .running
                 downloadService.startDownload(downloadJobs[index])
                 started += 1
-                if started >= 4 { break }
+                if started >= maxDownloadThreads { break }
             }
         }
+        activeDownloadCount = started
         queuedDownloadIDs = Array(queuedIDs.dropFirst(started))
     }
 
     func startNextQueuedDownloadIfNeeded() {
         guard !queuedDownloadIDs.isEmpty else { return }
+        guard activeDownloadCount < maxDownloadThreads else { return }
         let nextID = queuedDownloadIDs.removeFirst()
         if let index = downloadJobs.firstIndex(where: { $0.id == nextID }) {
             downloadJobs[index].status = .running
@@ -1263,6 +1564,86 @@ extension LauncherStore {
             ),
             at: 0
         )
+    }
+
+    func pauseJob(id: UUID) {
+        guard let index = downloadJobs.firstIndex(where: { $0.id == id }) else { return }
+        if downloadJobs[index].status == .running {
+            downloadService.pauseDownload(id: id)
+            downloadJobs[index].status = .paused
+        }
+    }
+
+    func resumeJob(id: UUID) {
+        guard let index = downloadJobs.firstIndex(where: { $0.id == id }) else { return }
+        if downloadJobs[index].status == .paused {
+            downloadService.resumeDownload(id: id)
+            downloadJobs[index].status = .running
+        }
+    }
+
+    func cancelJob(id: UUID) {
+        guard let index = downloadJobs.firstIndex(where: { $0.id == id }) else { return }
+        if downloadJobs[index].status.isActive {
+            downloadService.cancelDownload(id: id)
+            downloadJobs[index].status = .failed
+        }
+    }
+
+    func pauseGroup(_ group: DownloadTaskGroup) {
+        for job in group.jobs where job.status == .running {
+            pauseJob(id: job.id)
+        }
+    }
+
+    func resumeGroup(_ group: DownloadTaskGroup) {
+        for job in group.jobs where job.status == .paused {
+            resumeJob(id: job.id)
+        }
+    }
+
+    func cancelGroup(_ group: DownloadTaskGroup) {
+        for job in group.jobs where job.status.isActive {
+            cancelJob(id: job.id)
+        }
+    }
+
+    func createInstanceAndDownload(
+        name: String? = nil,
+        gameVersion: String,
+        loader: GameLoader,
+        memory: Int? = nil,
+        username: String? = nil,
+        jvmArgs: [String] = []
+    ) async {
+        // Check for existing instance with same version + loader
+        if let existing = instances.first(where: { $0.gameVersion == gameVersion && $0.loader == loader }) {
+            launcherSelectedInstanceID = existing.id
+            selectedSection = .downloads
+            selectedDownloadTab = .progress
+            await planVanillaInstallFromRemoteMetadata(for: existing)
+            if !downloadJobs.isEmpty {
+                await executeQueuedDownloads()
+            }
+            return
+        }
+
+        createInstance(
+            name: name ?? "\(gameVersion) \(loader.rawValue)",
+            gameVersion: gameVersion,
+            loader: loader,
+            memory: memory,
+            username: username,
+            jvmArgs: jvmArgs
+        )
+        guard let instance = instances.last else { return }
+        launcherSelectedInstanceID = instance.id
+        selectedSection = .downloads
+        selectedDownloadTab = .progress
+        await planVanillaInstallFromRemoteMetadata(for: instance)
+        if !downloadJobs.isEmpty {
+            await executeQueuedDownloads()
+        }
     }
 
     func prepareNativeLibrariesForSelectedInstance() {
@@ -1352,6 +1733,7 @@ extension LauncherStore {
     private func updateInstanceStatus(_ id: LauncherInstance.ID, status: InstanceStatus) {
         guard let index = instances.firstIndex(where: { $0.id == id }) else { return }
         instances[index].status = status
+        persistInstance(at: index)
     }
 
     private func finalizeDownloadedPlanIfPossible() {

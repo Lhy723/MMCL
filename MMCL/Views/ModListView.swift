@@ -4,6 +4,7 @@ struct ModListView: View {
     let instance: LauncherInstance
     @ObservedObject var store: LauncherStore
     @State private var mods: [ModInfo] = []
+    @State private var appeared = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -20,6 +21,7 @@ struct ModListView: View {
 
             if mods.isEmpty {
                 ContentUnavailableView("没有已安装的 Mod", systemImage: "puzzlepiece.extension", description: Text("从 Modrinth 下载 Mod 或手动放入 mods 目录"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(mods) { mod in
                     HStack {
@@ -52,7 +54,14 @@ struct ModListView: View {
             }
         }
         .padding(16)
-        .frame(minWidth: 500, minHeight: 400)
-        .onAppear { mods = store.scanInstalledMods(for: instance) }
+        .frame(minWidth: 500, minHeight: 400, alignment: .top)
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared ? 0 : 8)
+        .onAppear {
+            mods = store.scanInstalledMods(for: instance)
+            withAnimation(.mmclSpring(response: 0.4, dampingFraction: 0.85, scale: store.animationDurationScale)) {
+                appeared = true
+            }
+        }
     }
 }

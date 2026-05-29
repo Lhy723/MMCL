@@ -17,6 +17,7 @@ struct ShaderPackListView: View {
             }
             if packs.isEmpty {
                 ContentUnavailableView("没有已安装的光影包", systemImage: "sun.max", description: Text("手动将光影包放入 shaderpacks 目录"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(packs) { pack in
                     HStack {
@@ -36,7 +37,7 @@ struct ShaderPackListView: View {
             }
         }
         .padding(16)
-        .frame(minWidth: 500, minHeight: 400)
+        .frame(minWidth: 500, minHeight: 400, alignment: .top)
         .onAppear { packs = store.scanShaderPacks(for: instance) }
     }
 }

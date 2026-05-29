@@ -5,17 +5,33 @@ struct InstanceDetailView: View {
     @ObservedObject var store: LauncherStore
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                header
-                configuration
-                runtimeSelection
-                launchPreview
-                directories
-                plannedActions
+        VStack(alignment: .leading, spacing: 0) {
+            header
+                .padding(.horizontal)
+                .padding(.top)
+
+            List {
+                Section("启动配置") {
+                    configurationContent
+                }
+
+                Section("Java 运行时") {
+                    runtimeContent
+                }
+
+                Section("启动命令预览") {
+                    launchPreviewContent
+                }
+
+                Section("文件目录") {
+                    directoriesContent
+                }
+
+                Section("操作") {
+                    operationsContent
+                }
             }
-            .padding(24)
-            .frame(maxWidth: 900, alignment: .leading)
+            .listStyle(.inset)
         }
         .navigationTitle(instance.name)
         .accessibilityIdentifier("InstanceDetail")
@@ -39,60 +55,86 @@ struct InstanceDetailView: View {
 
             Spacer()
         }
+        .padding(.vertical, 4)
     }
 
-    private var configuration: some View {
-        DetailSection(title: "启动配置", systemImage: "slider.horizontal.3") {
-            InfoGrid(rows: [
-                ("离线用户名", instance.profile.offlineUsername),
-                ("内存", "\(instance.profile.memoryMegabytes) MB"),
-                ("JVM 参数", instance.profile.jvmArguments.isEmpty ? "未设置" : instance.profile.jvmArguments.joined(separator: " ")),
-                ("推荐 Java", "Java \(JavaRuntime.recommendedMajorVersion(for: instance.gameVersion))"),
-                ("上次游玩", instance.lastPlayedAt.map(Self.dateFormatter.string(from:)) ?? "从未启动")
-            ])
-        }
-    }
-
-    private var runtimeSelection: some View {
-        DetailSection(title: "Java 运行时", systemImage: "cup.and.saucer") {
-            VStack(alignment: .leading, spacing: 10) {
-                Picker("运行时", selection: $store.selectedJavaRuntimeID) {
-                    ForEach(store.javaRuntimes) { runtime in
-                        Text(runtime.displayName).tag(Optional(runtime.id))
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: 420, alignment: .leading)
-
-                Button {
-                    Task {
-                        await store.refreshJavaRuntimes()
-                    }
-                } label: {
-                    Label("重新扫描 Java", systemImage: "arrow.clockwise")
-                }
-
-                if let runtime = store.selectedJavaRuntime {
-                    InfoGrid(rows: [
-                        ("版本", runtime.version),
-                        ("架构", runtime.architecture.label),
-                        ("路径", runtime.executableURL.path),
-                        ("匹配状态", runtime.isRecommended(for: instance.gameVersion) ? "推荐" : "不推荐")
-                    ])
-                } else {
-                    Text("尚未发现 Java 运行时。后续阶段会接入自动扫描。")
-                        .foregroundStyle(.secondary)
-                }
+    private var configurationContent: some View {
+        Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 10) {
+            GridRow {
+                Text("离线用户名").foregroundStyle(.secondary)
+                Text(instance.profile.offlineUsername)
+            }
+            GridRow {
+                Text("内存").foregroundStyle(.secondary)
+                Text("\(instance.profile.memoryMegabytes) MB")
+            }
+            GridRow {
+                Text("JVM 参数").foregroundStyle(.secondary)
+                Text(instance.profile.jvmArguments.isEmpty ? "未设置" : instance.profile.jvmArguments.joined(separator: " "))
+            }
+            GridRow {
+                Text("推荐 Java").foregroundStyle(.secondary)
+                Text("Java \(JavaRuntime.recommendedMajorVersion(for: instance.gameVersion))")
+            }
+            GridRow {
+                Text("上次游玩").foregroundStyle(.secondary)
+                Text(instance.lastPlayedAt.map(Self.dateFormatter.string(from:)) ?? "从未启动")
             }
         }
     }
 
-    private var launchPreview: some View {
-        DetailSection(title: "启动命令预览", systemImage: "terminal") {
+    private var runtimeContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("运行时", selection: $store.selectedJavaRuntimeID) {
+                ForEach(store.javaRuntimes) { runtime in
+                    Text(runtime.displayName).tag(Optional(runtime.id))
+                }
+            }
+            .pickerStyle(.menu)
+
+            Button {
+                Task { await store.refreshJavaRuntimes() }
+            } label: {
+                if store.isScanningJava {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Label("重新扫描 Java", systemImage: "arrow.clockwise")
+                }
+            }
+            .buttonStyle(.bordered)
+            .disabled(store.isScanningJava)
+
+            if let runtime = store.selectedJavaRuntime {
+                Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 10) {
+                    GridRow {
+                        Text("版本").foregroundStyle(.secondary)
+                        Text(runtime.version)
+                    }
+                    GridRow {
+                        Text("架构").foregroundStyle(.secondary)
+                        Text(runtime.architecture.label)
+                    }
+                    GridRow {
+                        Text("路径").foregroundStyle(.secondary)
+                        Text(runtime.executableURL.path).textSelection(.enabled)
+                    }
+                    GridRow {
+                        Text("匹配状态").foregroundStyle(.secondary)
+                        Text(runtime.isRecommended(for: instance.gameVersion) ? "推荐" : "不推荐")
+                    }
+                }
+            } else {
+                Text("尚未发现 Java 运行时。")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var launchPreviewContent: some View {
+        Group {
             if let preview = store.launchPreviewForSelectedInstance() {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("该命令用于校验参数生成；真实启动会在下载与文件校验完成后接入。")
-                        .foregroundStyle(.secondary)
                     Text(preview.commandLine)
                         .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)
@@ -105,131 +147,124 @@ struct InstanceDetailView: View {
         }
     }
 
-    private var directories: some View {
-        DetailSection(title: "文件边界", systemImage: "folder") {
-            VStack(alignment: .leading, spacing: 8) {
-                PathRow(title: "实例目录", path: instance.rootDirectory.path)
-                PathRow(title: "Minecraft", path: instance.rootDirectory.appendingPathComponent(".minecraft").path)
-                PathRow(title: "日志", path: instance.rootDirectory.appendingPathComponent("logs").path)
-                PathRow(title: "模组", path: instance.rootDirectory.appendingPathComponent("mods").path)
-            }
+    private var directoriesContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            PathRow(title: "实例目录", path: instance.rootDirectory.path)
+            PathRow(title: "Minecraft", path: instance.rootDirectory.appendingPathComponent(".minecraft").path)
+            PathRow(title: "日志", path: instance.rootDirectory.appendingPathComponent("logs").path)
+            PathRow(title: "模组", path: instance.rootDirectory.appendingPathComponent("mods").path)
         }
     }
 
-    private var plannedActions: some View {
-        DetailSection(title: "Phase 0 操作", systemImage: "checklist") {
+    private var operationsContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Primary actions
             HStack(spacing: 12) {
-                Button {
-                    Task {
-                        await store.planVanillaInstallFromRemoteMetadata(for: instance)
-                    }
-                } label: {
-                    Label("生成安装计划", systemImage: "list.bullet.clipboard")
-                }
-
                 Button {
                     store.launchSelectedInstance()
                 } label: {
-                    Label("启动", systemImage: "play.fill")
+                    Label("启动游戏", systemImage: "play.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(store.selectedJavaRuntime == nil)
 
                 Button {
-                    store.prepareNativeLibrariesForSelectedInstance()
-                } label: {
-                    Label("准备 Native", systemImage: "square.and.arrow.down")
-                }
-                .disabled(store.plannedVersionMetadata == nil)
-
-                Button {
-                    store.inspectSelectedInstance()
-                } label: {
-                    Label("检查实例", systemImage: "checklist")
-                }
-                .disabled(store.selectedJavaRuntime == nil)
-
-                Button {
-                    Task {
-                        await store.repairSelectedInstance()
-                    }
-                } label: {
-                    Label("生成修复任务", systemImage: "wrench.and.screwdriver")
-                }
-
-                Button {
                     store.showingLogSheet = true
                 } label: {
-                    Label("打开日志", systemImage: "doc.text.magnifyingglass")
+                    Label("查看日志", systemImage: "doc.text.magnifyingglass")
                 }
+                .buttonStyle(.bordered)
 
                 Button {
                     store.showingModList = true
                 } label: {
                     Label("管理 Mod", systemImage: "puzzlepiece.extension")
                 }
+                .buttonStyle(.bordered)
 
                 Button {
                     store.showingResourcePacks = true
                 } label: {
                     Label("资源包", systemImage: "photo")
                 }
+                .buttonStyle(.bordered)
+            }
 
+            // Secondary actions
+            HStack(spacing: 12) {
                 Button {
                     store.showingShaderPacks = true
                 } label: {
                     Label("管理光影", systemImage: "sun.max")
                 }
+                .buttonStyle(.bordered)
 
                 Button {
                     store.analyzeCrash(for: instance)
                 } label: {
                     Label("崩溃分析", systemImage: "exclamationmark.triangle")
                 }
+                .buttonStyle(.bordered)
 
-                if instance.loader == .fabric {
-                    Button {
-                        Task {
-                            await store.installFabricLoader(for: instance)
+                Button {
+                    Task { await store.planVanillaInstallFromRemoteMetadata(for: instance) }
+                } label: {
+                    Label("生成安装计划", systemImage: "list.bullet.clipboard")
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    store.prepareNativeLibrariesForSelectedInstance()
+                } label: {
+                    Label("准备 Native", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.bordered)
+                .disabled(store.plannedVersionMetadata == nil)
+            }
+
+            // Loader-specific actions
+            if instance.loader == .fabric || instance.loader == .quilt || instance.loader == .forge {
+                Divider()
+                HStack(spacing: 12) {
+                    if instance.loader == .fabric {
+                        Button { Task { await store.installFabricLoader(for: instance) } } label: {
+                            Label("安装 Fabric", systemImage: "shippingbox")
                         }
-                    } label: {
-                        Label("安装 Fabric", systemImage: "shippingbox")
+                        .buttonStyle(.bordered)
                     }
-                }
-
-                if instance.loader == .quilt {
-                    Button {
-                        Task { await store.installQuiltLoader(for: instance) }
-                    } label: {
-                        Label("安装 Quilt", systemImage: "shippingbox")
+                    if instance.loader == .quilt {
+                        Button { Task { await store.installQuiltLoader(for: instance) } } label: {
+                            Label("安装 Quilt", systemImage: "shippingbox")
+                        }
+                        .buttonStyle(.bordered)
                     }
-                }
-
-                if instance.loader == .forge {
-                    Button {
-                        Task { await store.installForgeLoader(for: instance) }
-                    } label: {
-                        Label("安装 Forge", systemImage: "hammer")
-                    }
-                    Button {
-                        Task { await store.installNeoForgeLoader(for: instance) }
-                    } label: {
-                        Label("安装 NeoForge", systemImage: "hammer.fill")
+                    if instance.loader == .forge {
+                        Button { Task { await store.installForgeLoader(for: instance) } } label: {
+                            Label("安装 Forge", systemImage: "hammer")
+                        }
+                        .buttonStyle(.bordered)
+                        Button { Task { await store.installNeoForgeLoader(for: instance) } } label: {
+                            Label("安装 NeoForge", systemImage: "hammer.fill")
+                        }
+                        .buttonStyle(.bordered)
                     }
                 }
             }
 
+            // Launch session info
             if let session = store.currentLaunchSession {
-                InfoGrid(rows: [
-                    ("最近进程", "\(session.processIdentifier)"),
-                    ("启动日志", session.logFileURL.path)
-                ])
+                Divider()
+                Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 10) {
+                    GridRow {
+                        Text("最近进程").foregroundStyle(.secondary)
+                        Text("\(session.processIdentifier)")
+                    }
+                    GridRow {
+                        Text("启动日志").foregroundStyle(.secondary)
+                        Text(session.logFileURL.path).textSelection(.enabled)
+                    }
+                }
             }
-
-            Text("安装计划会从 Mojang 版本元数据生成；启动会调用选中的 Java 并写入 latest.log。")
-            Text("已具备在线 manifest 拉取、Java 输出解析、下载执行和 SHA-1 校验基础。")
-                .foregroundStyle(.secondary)
-                .font(.callout)
         }
     }
 
@@ -239,22 +274,6 @@ struct InstanceDetailView: View {
         formatter.timeStyle = .short
         return formatter
     }()
-}
-
-struct DetailSection<Content: View>: View {
-    let title: String
-    let systemImage: String
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label(title, systemImage: systemImage)
-                .font(.headline)
-            content
-        }
-        .padding(16)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-    }
 }
 
 private struct StatusPill: View {
@@ -274,23 +293,6 @@ private struct StatusPill: View {
         case .missingFiles: return "exclamationmark.triangle.fill"
         case .needsJava: return "cup.and.saucer.fill"
         case .notInstalled: return "arrow.down.circle.fill"
-        }
-    }
-}
-
-private struct InfoGrid: View {
-    let rows: [(String, String)]
-
-    var body: some View {
-        Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 10) {
-            ForEach(rows, id: \.0) { row in
-                GridRow {
-                    Text(row.0)
-                        .foregroundStyle(.secondary)
-                    Text(row.1)
-                        .textSelection(.enabled)
-                }
-            }
         }
     }
 }

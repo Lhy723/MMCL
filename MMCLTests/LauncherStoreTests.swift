@@ -28,7 +28,8 @@ final class LauncherStoreTests: XCTestCase {
             javaRuntimes: [runtime],
             availableVersions: []
         )
-        store.selectedSection = .instance(instanceID)
+        store.selectedSection = .launcher
+        store.launcherSelectedInstanceID = instanceID
         store.selectedJavaRuntimeID = runtime.id
 
         let preview = store.launchPreviewForSelectedInstance()
@@ -72,7 +73,8 @@ final class LauncherStoreTests: XCTestCase {
             availableVersions: [],
             javaRuntimeService: StubJavaRuntimeService(runtimes: [java17, java21])
         )
-        store.selectedSection = .instance(instanceID)
+        store.selectedSection = .launcher
+        store.launcherSelectedInstanceID = instanceID
 
         await store.refreshJavaRuntimes()
 
@@ -113,7 +115,8 @@ final class LauncherStoreTests: XCTestCase {
             availableVersions: [],
             launchService: StubLaunchService(session: expectedSession)
         )
-        store.selectedSection = .instance(instanceID)
+        store.selectedSection = .launcher
+        store.launcherSelectedInstanceID = instanceID
         store.selectedJavaRuntimeID = runtime.id
 
         store.launchSelectedInstance()
@@ -121,6 +124,22 @@ final class LauncherStoreTests: XCTestCase {
         XCTAssertEqual(store.currentLaunchSession, expectedSession)
         XCTAssertEqual(store.diagnostics.first?.title, "Minecraft 已启动")
         XCTAssertTrue(store.diagnostics.first?.summary.contains("42") == true)
+    }
+
+    func testStoreScansSkinsForAccount() {
+        let store = LauncherStore(
+            instances: [],
+            downloadJobs: [],
+            featuredProjects: [],
+            diagnostics: [],
+            javaRuntimes: [],
+            availableVersions: []
+        )
+
+        // Skin scanning with empty directory should return empty
+        let account = MinecraftAccount(username: "Test", uuid: "test-uuid", type: .offline)
+        store.scanSkinsForAccount(account)
+        XCTAssertTrue(store.availableSkins.isEmpty)
     }
 
     func testStoreBlocksLaunchWhenPreflightFails() {
@@ -161,7 +180,8 @@ final class LauncherStoreTests: XCTestCase {
             availableVersions: [],
             launchService: failingLaunchService
         )
-        store.selectedSection = .instance(instanceID)
+        store.selectedSection = .launcher
+        store.launcherSelectedInstanceID = instanceID
         store.selectedJavaRuntimeID = runtime.id
 
         store.launchSelectedInstance()
@@ -216,7 +236,8 @@ final class LauncherStoreTests: XCTestCase {
             javaRuntimes: [],
             availableVersions: []
         )
-        store.selectedSection = .instance(instanceID)
+        store.selectedSection = .launcher
+        store.launcherSelectedInstanceID = instanceID
 
         store.deleteInstance(instance)
 
@@ -261,7 +282,8 @@ final class LauncherStoreTests: XCTestCase {
                 )
             )
         )
-        store.selectedSection = .instance(instanceID)
+        store.selectedSection = .launcher
+        store.launcherSelectedInstanceID = instanceID
         store.selectedJavaRuntimeID = runtime.id
 
         store.inspectSelectedInstance()
@@ -303,7 +325,8 @@ final class LauncherStoreTests: XCTestCase {
             javaRuntimes: [],
             availableVersions: []
         )
-        store.selectedSection = .instance(instanceID)
+        store.selectedSection = .launcher
+        store.launcherSelectedInstanceID = instanceID
         store.planVanillaInstall(metadata: metadata, for: instance)
 
         store.prepareNativeLibrariesForSelectedInstance()
@@ -358,6 +381,10 @@ final class LauncherStoreTests: XCTestCase {
 
     private struct StubJavaRuntimeService: JavaRuntimeServicing {
         let runtimes: [JavaRuntime]
+
+        var portableJDKDirectory: URL {
+            FileManager.default.temporaryDirectory.appendingPathComponent("MMCL-JDK-Test")
+        }
 
         func bundledSearchLocations() -> [URL] {
             []
@@ -418,6 +445,23 @@ final class LauncherStoreTests: XCTestCase {
                 options: .atomic
             )
             return instance
+        }
+
+        func loadAllInstances() throws -> [LauncherInstance] {
+            let fm = FileManager.default
+            guard fm.fileExists(atPath: instancesDirectory.path) else { return [] }
+            let dirs = try fm.contentsOfDirectory(
+                at: instancesDirectory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+            return dirs.compactMap { dir in
+                let file = dir.appendingPathComponent("instance.json")
+                guard fm.fileExists(atPath: file.path),
+                      let data = try? Data(contentsOf: file),
+                      let instance = try? JSONDecoder.mmcl.decode(LauncherInstance.self, from: data) else { return nil }
+                return instance
+            }
         }
 
         func instanceFileURL(for instance: LauncherInstance) -> URL {

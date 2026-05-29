@@ -8,11 +8,14 @@ struct InstanceCreateSheet: View {
     @State private var memory: Int = 4096
     @State private var username: String = "Steve"
     @State private var jvmArgs: String = ""
+    @State private var appeared = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("新增实例")
                 .font(.largeTitle.weight(.semibold))
+                .opacity(appeared ? 1 : 0)
+                .offset(y: appeared ? 0 : -8)
 
             Form {
                 Section("基本信息") {
@@ -39,6 +42,8 @@ struct InstanceCreateSheet: View {
                 }
             }
             .formStyle(.grouped)
+            .opacity(appeared ? 1 : 0)
+            .offset(y: appeared ? 0 : 15)
 
             HStack {
                 Spacer()
@@ -47,30 +52,36 @@ struct InstanceCreateSheet: View {
                 }
                 .keyboardShortcut(.cancelAction)
 
-                Button("创建") {
+                Button("创建并下载") {
                     let args = jvmArgs
                         .split(separator: " ")
                         .map(String.init)
                         .filter { !$0.isEmpty }
-                    store.createInstance(
-                        name: name,
-                        gameVersion: selectedVersionID,
-                        loader: loader,
-                        memory: memory,
-                        username: username,
-                        jvmArgs: args
-                    )
+                    Task {
+                        await store.createInstanceAndDownload(
+                            name: name,
+                            gameVersion: selectedVersionID,
+                            loader: loader,
+                            memory: memory,
+                            username: username,
+                            jvmArgs: args
+                        )
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || selectedVersionID.isEmpty)
                 .keyboardShortcut(.defaultAction)
             }
+            .opacity(appeared ? 1 : 0)
         }
         .padding(24)
-        .frame(width: 480, height: 520)
+        .frame(width: 480, height: 520, alignment: .top)
         .onAppear {
             if selectedVersionID.isEmpty {
                 selectedVersionID = store.availableVersions.first?.id ?? ""
+            }
+            withAnimation(.mmclSpring(response: 0.5, dampingFraction: 0.85, scale: store.animationDurationScale)) {
+                appeared = true
             }
         }
     }

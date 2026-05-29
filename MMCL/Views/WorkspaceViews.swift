@@ -2,514 +2,387 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-struct DownloadsView: View {
+struct DiagnosticsView: View {
     @ObservedObject var store: LauncherStore
-    @State private var versionFilter: MinecraftVersion.ReleaseType? = nil
+    @State private var selectedSeverity: DiagnosticSeverity? = nil
+    @State private var appeared = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 0) {
             header
-            HStack(alignment: .center, spacing: 12) {
-                Picker("下载源", selection: $store.selectedDownloadSource) {
-                    ForEach(DownloadSource.allCases) { source in
-                        Text(source.rawValue).tag(source)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 420)
-
-                Button {
-                    Task {
-                        await store.refreshAvailableVersions()
-                    }
-                } label: {
-                    Label("刷新版本", systemImage: "arrow.clockwise")
-                }
-
-                Button {
-                    Task {
-                        await store.executeQueuedDownloads()
-                    }
-                } label: {
-                    Label("开始下载", systemImage: "arrow.down.circle.fill")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!store.downloadJobs.contains { $0.status == .queued })
-
-                Button {
-                    store.cancelDownloads()
-                } label: {
-                    Label("取消", systemImage: "xmark.circle")
-                }
-                .disabled(!store.downloadJobs.contains { $0.status.isActive })
-
-                Button {
-                    if store.downloadJobs.contains(where: { $0.status == .running }) {
-                        store.pauseDownloads()
-                    } else if store.downloadJobs.contains(where: { $0.status == .paused }) {
-                        store.resumeDownloads()
-                    }
-                } label: {
-                    if store.downloadJobs.contains(where: { $0.status == .running }) {
-                        Label("暂停", systemImage: "pause.circle")
-                    } else {
-                        Label("继续下载", systemImage: "play.circle")
-                    }
-                }
-                .disabled(!store.downloadJobs.contains { $0.status == .running || $0.status == .paused })
-
-                Button {
-                    store.expandSelectedInstanceAssetIndex()
-                } label: {
-                    Label("展开资源", systemImage: "shippingbox")
-                }
-
-                Button {
-                    store.prepareNativeLibrariesForSelectedInstance()
-                } label: {
-                    Label("准备 Native", systemImage: "square.and.arrow.down")
-                }
-                .disabled(store.plannedVersionMetadata == nil)
-            }
-
-            HStack(spacing: 16) {
-                Label("\(store.downloadJobs.count) 个任务", systemImage: "square.stack.3d.up")
-                Label(totalByteSummary, systemImage: "externaldrive.badge.checkmark")
-                Label(store.speedTracker.bytesPerSecond > 0 ? ByteCountFormatter.string(fromByteCount: store.speedTracker.bytesPerSecond, countStyle: .file) + "/s" : "等待中", systemImage: "speedometer")
-            }
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-
-            DetailSection(title: "可用版本", systemImage: "list.bullet.rectangle") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Picker("类型", selection: $versionFilter) {
-                        Text("全部").tag(MinecraftVersion.ReleaseType?.none)
-                        ForEach([MinecraftVersion.ReleaseType.release, .snapshot, .oldBeta, .oldAlpha], id: \.self) { type in
-                            Text(type.label).tag(Optional(type))
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 400)
-
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 4) {
-                            ForEach(filteredVersions) { version in
-                                HStack {
-                                    Text(version.id).font(.headline)
-                                    Text(version.type.label).foregroundStyle(.secondary)
-                                    Spacer()
-                                    Text("推荐 Java \(version.recommendedJavaMajorVersion)").foregroundStyle(.secondary)
-                                }
-                                .padding(.vertical, 2)
-                            }
-                        }
-                    }
-                    .frame(maxHeight: 200)
-                }
-            }
-
-            ForEach(store.downloadJobs) { job in
-                DownloadJobRow(job: job)
-            }
-
-            Spacer()
+                .padding(.horizontal)
+                .padding(.top)
+            filterBar
+                .padding(.horizontal)
+                .padding(.top, 8)
+            reportList
         }
-        .padding(24)
-        .navigationTitle("下载中心")
-    }
-
-    private var totalByteSummary: String {
-        let totalBytes = store.downloadJobs.reduce(Int64(0)) { $0 + $1.totalBytes }
-        guard totalBytes > 0 else { return "总计 0 字节" }
-        return ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
-    }
-
-    private var filteredVersions: [MinecraftVersion] {
-        if let filter = versionFilter {
-            return store.availableVersions.filter { $0.type == filter }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .navigationTitle("诊断日志")
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared ? 0 : 8)
+        .onAppear {
+            withAnimation(.mmclSpring(response: 0.4, dampingFraction: 0.85, scale: store.animationDurationScale)) {
+                appeared = true
+            }
         }
-        return store.availableVersions
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("下载中心")
+            Text("诊断日志")
                 .font(.largeTitle.weight(.semibold))
-            Text("下载任务会写入实例目录并进行 SHA-1 校验；全部完成后会自动准备 Native 并更新实例状态。")
+            Text("自动聚合 Java、下载、实例文件和 Mod 冲突问题。")
                 .foregroundStyle(.secondary)
         }
     }
-}
 
-private struct DownloadJobRow: View {
-    let job: DownloadJob
-
-    var body: some View {
-        DetailSection(title: job.title, systemImage: "arrow.down.circle") {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(job.source.rawValue)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(job.status.label)
+    private var filterBar: some View {
+        HStack(spacing: 12) {
+            Picker("严重程度", selection: $selectedSeverity) {
+                Text("全部").tag(DiagnosticSeverity?.none)
+                ForEach(DiagnosticSeverity.allCases) { severity in
+                    Text(severity.localized).tag(Optional(severity))
                 }
-                ProgressView(value: job.progress)
-                if let remoteURL = job.remoteURL {
-                    Text(remoteURL.absoluteString)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .textSelection(.enabled)
-                }
-                if let sha1 = job.sha1 {
-                    Text("SHA-1: \(sha1)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-                Text(job.destination.path)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
             }
-        }
-    }
-}
+            .pickerStyle(.menu)
 
-struct ContentProjectsView: View {
-    @ObservedObject var store: LauncherStore
-    @State private var searchText: String = ""
+            Spacer()
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Modrinth")
-                    .font(.largeTitle.weight(.semibold))
-                Text("搜索并安装 Mod、资源包、光影包。")
-                    .foregroundStyle(.secondary)
+            Button {
+                Task {
+                    await store.runDiagnostics()
+                }
+            } label: {
+                Label("运行诊断", systemImage: "stethoscope")
             }
+            .buttonStyle(.bordered)
 
-            HStack {
-                TextField("搜索 Mod...", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit {
-                        Task { await store.searchModrinth(query: searchText) }
-                    }
-
-                Button {
-                    Task { await store.searchModrinth(query: searchText) }
+            if !store.diagnostics.isEmpty {
+                Button(role: .destructive) {
+                    store.diagnostics.removeAll()
                 } label: {
-                    Label("搜索", systemImage: "magnifyingglass")
+                    Label("清空", systemImage: "trash")
                 }
-                .disabled(searchText.trimmingCharacters(in: .whitespaces).isEmpty)
+                .buttonStyle(.bordered)
             }
+        }
+    }
 
-            if store.modrinthSearchResults.isEmpty && !searchText.isEmpty && store.modrinthSearchQuery == searchText {
-                ContentUnavailableView("没有找到结果", systemImage: "magnifyingglass", description: Text("试试其他关键词"))
+    private var reportList: some View {
+        Group {
+            if filteredReports.isEmpty {
+                ContentUnavailableView(
+                    store.diagnostics.isEmpty ? "暂无诊断报告" : "没有匹配的报告",
+                    systemImage: store.diagnostics.isEmpty ? "checkmark.shield" : "line.3.horizontal.decrease.circle",
+                    description: Text(store.diagnostics.isEmpty ? "运行诊断以检查潜在问题" : "试试其他筛选条件")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 10) {
-                        ForEach(store.modrinthSearchResults) { result in
-                            ModrinthSearchRow(result: result, store: store)
-                        }
-                    }
+                List(filteredReports) { report in
+                    DiagnosticReportRow(report: report)
                 }
+                .listStyle(.inset)
             }
-
-            Spacer()
         }
-        .padding(24)
-        .navigationTitle("Modrinth")
+    }
+
+    private var filteredReports: [DiagnosticReport] {
+        if let severity = selectedSeverity {
+            return store.diagnostics.filter { $0.severity == severity }
+        }
+        return store.diagnostics
     }
 }
 
-private struct ModrinthSearchRow: View {
-    let result: ModrinthSearchResult
-    @ObservedObject var store: LauncherStore
-
-    var body: some View {
-        Button {
-            store.selectedModrinthProject = result
-            store.showingModrinthDetail = true
-        } label: {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(result.title)
-                            .font(.headline)
-                        Text(result.projectType)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.quaternary, in: Capsule())
-                    }
-                    Text(result.description)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                    HStack(spacing: 12) {
-                        Label("\(result.downloads)", systemImage: "arrow.down")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        ForEach(result.categories.prefix(3), id: \.self) { category in
-                            Text(category)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(.tertiary, in: Capsule())
-                        }
-                    }
-                }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .foregroundStyle(.secondary)
-            }
-            .padding(12)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-struct DiagnosticsView: View {
-    @ObservedObject var store: LauncherStore
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("诊断日志")
-                        .font(.largeTitle.weight(.semibold))
-                    Text("中文诊断会聚合 Java、下载、实例文件和 Mod 冲突问题。")
-                        .foregroundStyle(.secondary)
-                }
-
-                ForEach(store.diagnostics) { report in
-                    DiagnosticReportView(report: report)
-                }
-            }
-            .padding(24)
-        }
-        .navigationTitle("诊断日志")
-    }
-}
-
-struct CurseForgeView: View {
-    @ObservedObject var store: LauncherStore
-    @State private var searchText = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("CurseForge")
-                    .font(.largeTitle.weight(.semibold))
-                Text("搜索 CurseForge 上的 Mod。")
-                    .foregroundStyle(.secondary)
-            }
-            HStack {
-                TextField("搜索 Mod...", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { Task { await store.searchCurseForge(query: searchText) } }
-                Button {
-                    Task { await store.searchCurseForge(query: searchText) }
-                } label: { Label("搜索", systemImage: "magnifyingglass") }
-                .disabled(searchText.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-            ScrollView {
-                LazyVStack(spacing: 10) {
-                    ForEach(store.curseForgeResults) { result in
-                        CurseForgeRow(result: result)
-                    }
-                }
-            }
-            Spacer()
-        }
-        .padding(24)
-        .navigationTitle("CurseForge")
-    }
-}
-
-private struct CurseForgeRow: View {
-    let result: CurseForgeSearchResult
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(result.name)
-                    .font(.headline)
-                Text(result.summary)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                Label("\(result.downloadCount)", systemImage: "arrow.down")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .padding(12)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-private struct DiagnosticReportView: View {
+private struct DiagnosticReportRow: View {
     let report: DiagnosticReport
 
     var body: some View {
-        DetailSection(title: report.title, systemImage: iconName) {
-            VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Image(systemName: iconName)
+                    .foregroundStyle(iconColor)
+                Text(report.title)
+                    .font(.headline)
+                Spacer()
                 Text(report.localizedSeverity)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
-                Text(report.summary)
+            }
+            Text(report.summary)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            if !report.suggestedActions.isEmpty {
                 ForEach(report.suggestedActions, id: \.self) { action in
                     Label(action, systemImage: "checkmark.circle")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
         }
+        .padding(.vertical, 4)
     }
 
     private var iconName: String {
         switch report.severity {
-        case .info: return "info.circle"
-        case .warning: return "exclamationmark.triangle"
-        case .error: return "xmark.octagon"
+        case .info: return "info.circle.fill"
+        case .warning: return "exclamationmark.triangle.fill"
+        case .error: return "xmark.octagon.fill"
+        }
+    }
+
+    private var iconColor: Color {
+        switch report.severity {
+        case .info: return .blue
+        case .warning: return .orange
+        case .error: return .red
         }
     }
 }
 
 struct SettingsView: View {
     @ObservedObject var store: LauncherStore
+    @State private var selectedTab = "launch"
+    @State private var appeared = false
+
+    var body: some View {
+        TabView(selection: $selectedTab) {
+            LaunchSettingsTab(store: store)
+                .tabItem { Label("启动", systemImage: "play.fill") }
+                .tag("launch")
+
+            PersonalizationSettingsTab(store: store)
+                .tabItem { Label("个性化", systemImage: "paintbrush") }
+                .tag("personalization")
+
+            OtherSettingsTab(store: store)
+                .tabItem { Label("其他", systemImage: "ellipsis.circle") }
+                .tag("other")
+        }
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared ? 0 : 8)
+        .onAppear {
+            withAnimation(.mmclSpring(response: 0.4, dampingFraction: 0.85, scale: store.animationDurationScale)) {
+                appeared = true
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+// MARK: - Launch Settings
+
+private struct LaunchSettingsTab: View {
+    @ObservedObject var store: LauncherStore
 
     var body: some View {
         Form {
-            Section("启动") {
-                TextField("默认离线用户名", text: $store.defaultOfflineUsername)
-                Stepper("默认内存：\(store.defaultMemoryMegabytes) MB", value: $store.defaultMemoryMegabytes, in: 1024...16384, step: 512)
-            }
-
-            Section("显示") {
-                HStack {
-                    Text("默认分辨率")
-                    Spacer()
-                    Stepper("\(store.defaultResolutionWidth)x\(store.defaultResolutionHeight)", value: $store.defaultResolutionWidth, in: 640...3840, step: 32)
-                }
-            }
-
-            Section("下载") {
-                Picker("首选下载源", selection: $store.preferredDownloadSource) {
-                    ForEach(DownloadSource.allCases) { source in
-                        Text(source.rawValue).tag(source)
+            Section("启动选项") {
+                Picker("版本隔离", selection: $store.versionIsolation) {
+                    ForEach(VersionIsolation.allCases) { v in
+                        Text(v.rawValue).tag(v)
                     }
                 }
-            }
+                .help(store.versionIsolation.helpText)
 
-            Section("语言") {
-                Picker("界面语言", selection: $store.appLanguage) {
-                    ForEach(AppLanguage.allCases) { lang in
-                        Text(lang.rawValue).tag(lang)
+                TextField("游戏窗口标题", text: $store.gameWindowTitle)
+                    .textFieldStyle(.roundedBorder)
+                    .help("留空使用默认标题")
+
+                TextField("自定义信息", text: $store.customInfo)
+                    .textFieldStyle(.roundedBorder)
+                    .help("显示在启动器界面上的自定义文本")
+
+                Picker("启动器可见性", selection: $store.launcherVisibility) {
+                    ForEach(LauncherVisibility.allCases) { v in
+                        Text(v.rawValue).tag(v)
                     }
                 }
-            }
 
-            Section("JVM 预设") {
-                ForEach(store.jvmPresets) { preset in
+                Picker("进程优先级", selection: $store.processPriority) {
+                    ForEach(ProcessPriority.allCases) { p in
+                        Text(p.rawValue).tag(p)
+                    }
+                }
+
+                Picker("窗口大小", selection: $store.windowSizeMode) {
+                    ForEach(WindowSizeMode.allCases) { s in
+                        Text(s.rawValue).tag(s)
+                    }
+                }
+                if store.windowSizeMode == .custom {
                     HStack {
-                        Toggle(preset.name, isOn: Binding(
-                            get: { preset.isEnabled },
-                            set: { newValue in
-                                if let idx = store.jvmPresets.firstIndex(where: { $0.id == preset.id }) {
-                                    store.jvmPresets[idx].isEnabled = newValue
-                                }
-                            }
-                        ))
-                        Spacer()
-                        Text(preset.arguments.joined(separator: " "))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                        Text("尺寸")
+                        TextField("宽", value: $store.defaultResolutionWidth, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 60)
+                        Text("x")
+                        TextField("高", value: $store.defaultResolutionHeight, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 60)
                     }
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
 
-            Section("外观") {
-                Picker("配色方案", selection: $store.colorScheme) {
-                    ForEach(AppColorScheme.allCases) { scheme in
-                        Text(scheme.rawValue).tag(scheme)
+            Section("游戏 Java") {
+                Picker("运行时", selection: $store.selectedJavaRuntimeID) {
+                    Text("自动检测").tag(JavaRuntime.ID?.none)
+                    ForEach(store.javaRuntimes) { runtime in
+                        Text(runtime.displayName).tag(Optional(runtime.id))
                     }
-                }
-            }
-
-            Section("账号") {
-                ForEach(store.accounts) { account in
-                    HStack {
-                        Text(account.displayName)
-                        Spacer()
-                        Text(account.type == .microsoft ? "在线" : "离线")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Button(role: .destructive) {
-                            store.deleteAccount(account)
-                        } label: {
-                            Image(systemName: "trash")
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-
-                Button("添加离线账号") {
-                    store.addOfflineAccount(username: store.defaultOfflineUsername)
                 }
 
                 Button {
-                    Task { await store.startMicrosoftLogin() }
+                    Task { await store.refreshJavaRuntimes() }
                 } label: {
-                    if store.isLoggingIn {
+                    if store.isScanningJava {
                         ProgressView()
+                            .controlSize(.small)
                     } else {
-                        Label("Microsoft 登录", systemImage: "person.crop.circle.badge.checkmark")
+                        Label("重新扫描 Java", systemImage: "arrow.clockwise")
                     }
                 }
-                .disabled(store.isLoggingIn)
+                .disabled(store.isScanningJava)
 
-                if !store.deviceCodeMessage.isEmpty {
-                    Text(store.deviceCodeMessage)
+                Button {
+                    store.showingJDKInstall = true
+                } label: {
+                    Label("安装 Java", systemImage: "arrow.down.circle")
+                }
+
+                HStack {
+                    Text("手动导入 Java 路径")
+                    Spacer()
+                    Button("选择") {
+                        let panel = NSOpenPanel()
+                        panel.allowsMultipleSelection = false
+                        panel.canChooseDirectories = false
+                        panel.canChooseFiles = true
+                        panel.begin { response in
+                            if response == .OK, let url = panel.url {
+                                store.customJavaPath = url.path
+                            }
+                        }
+                    }
+                }
+                if !store.customJavaPath.isEmpty {
+                    Text(store.customJavaPath)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
             }
 
-            Section("配置管理") {
-                Button {
-                    let panel = NSSavePanel()
-                    panel.allowedContentTypes = [.json]
-                    panel.nameFieldStringValue = "mmcl_profile_export.json"
-                    panel.begin { response in
-                        if response == .OK, let url = panel.url {
-                            store.exportProfile(to: url)
-                        }
+            Section("内存分配") {
+                Toggle("自动配置内存", isOn: $store.memoryAutoConfig)
+                    .help("根据系统内存自动调整分配")
+
+                if !store.memoryAutoConfig {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("分配内存：\(store.defaultMemoryMegabytes) MB")
+                        Slider(value: Binding(
+                            get: { Double(store.defaultMemoryMegabytes) },
+                            set: { store.defaultMemoryMegabytes = Int($0) }
+                        ), in: 512...32768, step: 256)
                     }
-                } label: {
-                    Label("导出配置", systemImage: "square.and.arrow.up")
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
-                Button {
-                    let panel = NSOpenPanel()
-                    panel.allowedContentTypes = [.json]
-                    panel.begin { response in
-                        if response == .OK, let url = panel.url {
-                            store.importProfile(from: url)
+                let totalBytes = ProcessInfo.processInfo.physicalMemory
+                let divisor: UInt64 = 1024 * 1024
+                let totalMB = Int(totalBytes / divisor)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("系统总内存")
+                        Spacer()
+                        Text("\(totalMB) MB")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    let allocFraction = min(Double(store.defaultMemoryMegabytes) / Double(totalMB), 1.0)
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.secondary.opacity(0.15))
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(allocFraction > 0.85 ? Color.red : Color.accentColor)
+                                .frame(width: geo.size.width * allocFraction)
                         }
                     }
-                } label: {
-                    Label("导入配置", systemImage: "square.and.arrow.down")
+                    .frame(height: 8)
+                    .animation(.mmclSpring(response: 0.4, dampingFraction: 0.85, scale: store.animationDurationScale), value: store.defaultMemoryMegabytes)
+                    Text("已分配 \(store.defaultMemoryMegabytes) MB（\(String(format: "%.0f", allocFraction * 100))%）")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
-            Section("自定义背景") {
+            Section("高级选项") {
+                TextField("JVM 参数", text: Binding(
+                    get: { store.jvmPresets.filter(\.isEnabled).flatMap(\.arguments).joined(separator: " ") },
+                    set: { _ in }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.body, design: .monospaced))
+                .disabled(true)
+                .help("在下方 JVM 预设中管理")
+
+                TextField("游戏参数", text: $store.gameArguments)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+                    .help("额外的游戏启动参数")
+
+                TextField("启动前执行命令", text: $store.preLaunchCommand)
+                    .textFieldStyle(.roundedBorder)
+                    .help("启动游戏前执行的 shell 命令")
+
+                Toggle("使用高性能显卡", isOn: $store.useHighPerformanceGPU)
+                    .help("macOS 会优先使用独立显卡")
+
+                Section("JVM 预设") {
+                    ForEach(store.jvmPresets) { preset in
+                        HStack {
+                            Toggle(preset.name, isOn: Binding(
+                                get: { preset.isEnabled },
+                                set: { newValue in
+                                    if let idx = store.jvmPresets.firstIndex(where: { $0.id == preset.id }) {
+                                        store.jvmPresets[idx].isEnabled = newValue
+                                    }
+                                }
+                            ))
+                            Spacer()
+                            Text(preset.arguments.joined(separator: " "))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .animation(.mmclSpring(response: 0.35, dampingFraction: 0.85, scale: store.animationDurationScale), value: store.windowSizeMode)
+        .animation(.mmclSpring(response: 0.35, dampingFraction: 0.85, scale: store.animationDurationScale), value: store.memoryAutoConfig)
+    }
+}
+
+// MARK: - Personalization Settings
+
+private struct PersonalizationSettingsTab: View {
+    @ObservedObject var store: LauncherStore
+
+    var body: some View {
+        Form {
+            Section("外观") {
+                Picker("配色方案", selection: $store.colorScheme) {
+                    ForEach(AppColorScheme.allCases) { scheme in
+                        Text(scheme.rawValue).tag(scheme)
+                    }
+                }
+
                 Button {
                     let panel = NSOpenPanel()
                     panel.allowedContentTypes = [.image]
@@ -541,10 +414,183 @@ struct SettingsView: View {
                     ), in: 0...20, step: 1) {
                         Text("模糊半径：\(Int(store.backgroundImage.blurRadius))")
                     }
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+
+            Section("动画") {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("动画时长")
+                        Spacer()
+                        Text(store.animationDurationScale == 0 ? "关闭" :
+                             store.animationDurationScale == 0.5 ? "快" :
+                             store.animationDurationScale == 1.0 ? "正常" :
+                             store.animationDurationScale == 1.5 ? "慢" : "自定义")
+                            .foregroundStyle(.secondary)
+                    }
+                    Slider(value: $store.animationDurationScale, in: 0...2, step: 0.25)
+                    Text("0 = 关闭动画，1 = 正常，2 = 两倍时长")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("语言") {
+                Picker("界面语言", selection: $store.appLanguage) {
+                    ForEach(AppLanguage.allCases) { lang in
+                        Text(lang.rawValue).tag(lang)
+                    }
+                }
+            }
+
+            Section("账号") {
+                ForEach(store.accounts) { account in
+                    AccountRow(account: account, store: store)
+                }
+
+                Button("添加离线账号") {
+                    store.addOfflineAccount(username: store.defaultOfflineUsername)
+                }
+
+                Button {
+                    Task { await store.startMicrosoftLogin() }
+                } label: {
+                    if store.isLoggingIn {
+                        ProgressView()
+                    } else {
+                        Label("Microsoft 登录", systemImage: "person.crop.circle.badge.checkmark")
+                    }
+                }
+                .disabled(store.isLoggingIn)
+
+                if !store.deviceCodeMessage.isEmpty {
+                    Text(store.deviceCodeMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .animation(.mmclSpring(response: 0.35, dampingFraction: 0.85, scale: store.animationDurationScale), value: store.backgroundImage.url != nil)
+    }
+}
+
+// MARK: - Other Settings
+
+private struct OtherSettingsTab: View {
+    @ObservedObject var store: LauncherStore
+
+    var body: some View {
+        Form {
+            Section("下载") {
+                Picker("文件下载源", selection: $store.fileDownloadSourceMode) {
+                    ForEach(FileDownloadSourceMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+
+                Picker("版本列表源", selection: $store.versionListSourceMode) {
+                    ForEach(VersionListSourceMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("最大线程数：\(store.maxDownloadThreads)")
+                    Slider(value: Binding(
+                        get: { Double(store.maxDownloadThreads) },
+                        set: { store.maxDownloadThreads = Int($0) }
+                    ), in: 1...255, step: 1)
+                    Text("通常 64 线程已足够")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(store.downloadSpeedLimit == 0 ? "速度限制：不限制" : "速度限制：\(store.downloadSpeedLimit) KB/s")
+                    Slider(value: Binding(
+                        get: { Double(store.downloadSpeedLimit) },
+                        set: { store.downloadSpeedLimit = Int($0) }
+                    ), in: 0...4096, step: 64)
+                }
+            }
+
+            Section("社区资源") {
+                Picker("来源", selection: $store.communitySourceMode) {
+                    ForEach(CommunitySourceMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+
+                Picker("文件名格式", selection: $store.filenameFormat) {
+                    ForEach(FilenameFormat.allCases) { fmt in
+                        Text(fmt.rawValue).tag(fmt)
+                    }
+                }
+
+                Picker("Mod 管理样式", selection: $store.modListDisplayStyle) {
+                    ForEach(ModListDisplayStyle.allCases) { style in
+                        Text(style.rawValue).tag(style)
+                    }
+                }
+            }
+
+            Section("CurseForge API") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("CurseForge API Key")
+                        .font(.headline)
+                    Text("可选。填入后可同时搜索 CurseForge 资源。从 console.curseforge.com 获取。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    SecureField("输入 API Key", text: $store.curseForgeApiKey)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+
+            Section("配置管理") {
+                Button {
+                    let panel = NSSavePanel()
+                    panel.allowedContentTypes = [.json]
+                    panel.nameFieldStringValue = "mmcl_profile_export.json"
+                    panel.begin { response in
+                        if response == .OK, let url = panel.url {
+                            store.exportProfile(to: url)
+                        }
+                    }
+                } label: {
+                    Label("导出配置", systemImage: "square.and.arrow.up")
+                }
+
+                Button {
+                    let panel = NSOpenPanel()
+                    panel.allowedContentTypes = [.json]
+                    panel.begin { response in
+                        if response == .OK, let url = panel.url {
+                            store.importProfile(from: url)
+                        }
+                    }
+                } label: {
+                    Label("导入配置", systemImage: "square.and.arrow.down")
                 }
             }
 
             Section("关于") {
+                HStack(spacing: 14) {
+                    Image(nsImage: NSApplication.shared.applicationIconImage)
+                        .resizable()
+                        .frame(width: 64, height: 64)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("MMCL")
+                            .font(.title2.weight(.semibold))
+                        Text("macOS Minecraft 启动器")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
                 HStack {
                     Text("当前版本")
                     Spacer()
@@ -553,6 +599,18 @@ struct SettingsView: View {
                 Button("检查更新") {
                     Task { await store.checkForUpdates() }
                 }
+
+                Button {
+                    store.openGitHubRepo()
+                } label: {
+                    Label("GitHub 仓库", systemImage: "link")
+                }
+
+                Text("如果 MMCL 对你有帮助，欢迎去 GitHub 点个 star (◕ᴗ◕✿)\n一个人开发不容易，你的支持是我持续更新的最大动力！")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 4)
+
                 if store.updateAvailable, let v = store.latestVersion {
                     Text("新版本可用：\(v)")
                         .foregroundStyle(.blue)
@@ -566,7 +624,56 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .padding(20)
-        .frame(width: 520, height: 420)
+    }
+}
+
+private struct AccountRow: View {
+    let account: MinecraftAccount
+    @ObservedObject var store: LauncherStore
+    @State private var isEditing = false
+    @State private var editUsername: String = ""
+
+    var body: some View {
+        HStack {
+            if isEditing && account.type == .offline {
+                TextField("用户名", text: $editUsername)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { save() }
+                Button("保存") { save() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                Button("取消") { isEditing = false }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            } else {
+                Text(account.displayName)
+                Spacer()
+                Text(account.type == .microsoft ? "在线" : "离线")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if account.type == .offline {
+                    Button {
+                        editUsername = account.username
+                        isEditing = true
+                    } label: {
+                        Image(systemName: "pencil")
+                    }
+                    .buttonStyle(.plain)
+                }
+                Button(role: .destructive) {
+                    store.deleteAccount(account)
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func save() {
+        let name = editUsername.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        store.updateAccountUsername(account, newUsername: name)
+        isEditing = false
     }
 }

@@ -7,68 +7,28 @@ struct ServerListView: View {
     @State private var newServerAddress: String = ""
     @State private var newServerPort: String = "25565"
     @State private var editingServerID: UUID?
+    @State private var appeared = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("服务器列表")
-                .font(.largeTitle.weight(.semibold))
-
-            if let instance = store.selectedInstance {
-                Text("实例：\(instance.name)")
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack {
-                Button {
-                    showingAddSheet = true
-                    newServerName = ""
-                    newServerAddress = ""
-                    newServerPort = "25565"
-                    editingServerID = nil
-                } label: {
-                    Label("添加服务器", systemImage: "plus")
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button {
-                    store.pingAllServers()
-                } label: {
-                    Label("全部 Ping", systemImage: "arrow.clockwise")
-                }
-
-                Spacer()
-            }
-
-            if store.serverList.isEmpty {
-                Text("暂无服务器。点击「添加服务器」开始。")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    ForEach(sortedServers) { server in
-                        ServerRow(server: server) {
-                            if let instance = store.selectedInstance {
-                                store.deleteServer(server, for: instance)
-                            }
-                        } onPing: {
-                            store.pingServer(server)
-                        } onEdit: {
-                            newServerName = server.name
-                            newServerAddress = server.address
-                            newServerPort = "\(server.port)"
-                            editingServerID = server.id
-                            showingAddSheet = true
-                        } onToggleFavorite: {
-                            if let instance = store.selectedInstance {
-                                store.toggleServerFavorite(server, for: instance)
-                            }
-                        }
-                    }
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            header
+                .padding(.horizontal)
+                .padding(.top)
+            toolbar
+                .padding(.horizontal)
+                .padding(.top, 8)
+            serverList
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .navigationTitle("服务器列表")
+        .frame(maxHeight: .infinity, alignment: .top)
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared ? 0 : 8)
+        .onAppear {
+            withAnimation(.mmclSpring(response: 0.4, dampingFraction: 0.85, scale: store.animationDurationScale)) {
+                appeared = true
             }
         }
-        .padding(24)
-        .navigationTitle("服务器列表")
         .sheet(isPresented: $showingAddSheet) {
             VStack(alignment: .leading, spacing: 18) {
                 Text(editingServerID == nil ? "添加服务器" : "编辑服务器")
@@ -124,6 +84,76 @@ struct ServerListView: View {
         .onAppear {
             if let instance = store.selectedInstance {
                 store.loadServerList(for: instance)
+            }
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("服务器列表")
+                .font(.largeTitle.weight(.semibold))
+            if let instance = store.selectedInstance {
+                Text("实例：\(instance.name)")
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("管理多人游戏服务器列表。")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var toolbar: some View {
+        HStack(spacing: 12) {
+            Button {
+                showingAddSheet = true
+                newServerName = ""
+                newServerAddress = ""
+                newServerPort = "25565"
+                editingServerID = nil
+            } label: {
+                Label("添加服务器", systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
+
+            Button {
+                store.pingAllServers()
+            } label: {
+                Label("全部 Ping", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.bordered)
+
+            Spacer()
+        }
+    }
+
+    private var serverList: some View {
+        Group {
+            if store.serverList.isEmpty {
+                ContentUnavailableView("暂无服务器", systemImage: "server.rack", description: Text("点击「添加服务器」开始"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List {
+                    ForEach(sortedServers) { server in
+                        ServerRow(server: server) {
+                            if let instance = store.selectedInstance {
+                                store.deleteServer(server, for: instance)
+                            }
+                        } onPing: {
+                            store.pingServer(server)
+                        } onEdit: {
+                            newServerName = server.name
+                            newServerAddress = server.address
+                            newServerPort = "\(server.port)"
+                            editingServerID = server.id
+                            showingAddSheet = true
+                        } onToggleFavorite: {
+                            if let instance = store.selectedInstance {
+                                store.toggleServerFavorite(server, for: instance)
+                            }
+                        }
+                    }
+                }
+                .listStyle(.inset)
             }
         }
     }

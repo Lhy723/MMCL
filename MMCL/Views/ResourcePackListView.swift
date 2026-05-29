@@ -20,6 +20,7 @@ struct ResourcePackListView: View {
 
             if packs.isEmpty {
                 ContentUnavailableView("没有已安装的资源包", systemImage: "photo", description: Text("将资源包放入 .minecraft/resourcepacks 目录"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(packs) { pack in
                     HStack {
@@ -43,7 +44,7 @@ struct ResourcePackListView: View {
             }
         }
         .padding(16)
-        .frame(minWidth: 500, minHeight: 400)
+        .frame(minWidth: 500, minHeight: 400, alignment: .top)
         .onAppear { packs = store.scanResourcePacks(for: instance) }
     }
 }

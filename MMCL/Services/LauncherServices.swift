@@ -11,6 +11,7 @@ protocol InstanceServicing {
         loader: GameLoader,
         profile: LaunchProfile
     ) throws -> LauncherInstance
+    func loadAllInstances() throws -> [LauncherInstance]
     func instanceFileURL(for instance: LauncherInstance) -> URL
     func encode(_ instance: LauncherInstance) throws -> Data
     func decode(from data: Data) throws -> LauncherInstance
@@ -65,6 +66,25 @@ struct InstanceService: InstanceServicing {
         try encode(instance).write(to: instanceFileURL(for: instance), options: .atomic)
 
         return instance
+    }
+
+    func loadAllInstances() throws -> [LauncherInstance] {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: instancesDirectory.path) else { return [] }
+        let contents = try fileManager.contentsOfDirectory(
+            at: instancesDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        var instances: [LauncherInstance] = []
+        for dir in contents {
+            let fileURL = dir.appendingPathComponent("instance.json")
+            guard fileManager.fileExists(atPath: fileURL.path) else { continue }
+            let data = try Data(contentsOf: fileURL)
+            let instance = try decode(from: data)
+            instances.append(instance)
+        }
+        return instances
     }
 
     func instanceFileURL(for instance: LauncherInstance) -> URL {
@@ -179,12 +199,15 @@ protocol DownloadServicing: AnyObject {
     func makeAssetObjectJobs(
         assetIndex: AssetIndex,
         instance: LauncherInstance,
-        source: DownloadSource
+        source: DownloadSource,
+        taskGroupID: UUID?,
+        taskGroupName: String?
     ) -> [DownloadJob]
     func prepareNativeLibraries(metadata: VersionMetadata, instance: LauncherInstance) throws -> [URL]
     func startDownload(_ job: DownloadJob)
     func pauseDownload(id: UUID)
     func resumeDownload(id: UUID)
+    func cancelDownload(id: UUID)
     func cancelAllDownloads()
 }
 
@@ -194,6 +217,7 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
     var onError: ((UUID, Error) -> Void)?
 
     private var session: URLSession!
+    private let lock = NSLock()
     private var activeTasks: [UUID: URLSessionDownloadTask] = [:]
     private var resumeDataMap: [UUID: Data] = [:]
     private var jobsByID: [UUID: DownloadJob] = [:]
@@ -213,7 +237,9 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
 
         var runningJob = job
         runningJob.status = .running
+        lock.lock()
         jobsByID[job.id] = runningJob
+        lock.unlock()
 
         // Handle file URLs directly (URLSessionDownloadTask doesn't support them)
         if remoteURL.isFileURL {
@@ -233,7 +259,9 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
                         if actualSHA1.caseInsensitiveCompare(expectedSHA1) != .orderedSame {
                             var failedJob = job
                             failedJob.status = .failed
+                            self.lock.lock()
                             self.jobsByID[job.id] = failedJob
+                            self.lock.unlock()
                             self.onError?(job.id, DownloadExecutionError.sha1Mismatch(
                                 jobTitle: job.title,
                                 expected: expectedSHA1,
@@ -246,12 +274,16 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
                     var completedJob = job
                     completedJob.completedBytes = job.totalBytes
                     completedJob.status = .completed
+                    self.lock.lock()
                     self.jobsByID[job.id] = completedJob
+                    self.lock.unlock()
                     self.onComplete?(job.id, completedJob)
                 } catch {
                     var failedJob = job
                     failedJob.status = .failed
+                    self.lock.lock()
                     self.jobsByID[job.id] = failedJob
+                    self.lock.unlock()
                     self.onError?(job.id, error)
                 }
             }
@@ -259,42 +291,73 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
         }
 
         let task: URLSessionDownloadTask
-        if let resumeData = resumeDataMap[job.id] {
-            task = session.downloadTask(withResumeData: resumeData)
+        lock.lock()
+        let resumeData = resumeDataMap[job.id]
+        if let resumeData {
             resumeDataMap.removeValue(forKey: job.id)
+        }
+        lock.unlock()
+        if let resumeData {
+            task = session.downloadTask(withResumeData: resumeData)
         } else {
             task = session.downloadTask(with: remoteURL)
         }
         task.taskDescription = job.id.uuidString
+        lock.lock()
         activeTasks[job.id] = task
+        lock.unlock()
         task.resume()
     }
 
     func pauseDownload(id: UUID) {
-        guard let task = activeTasks[id] else { return }
+        lock.lock()
+        let task = activeTasks[id]
+        lock.unlock()
+        guard let task else { return }
         task.cancel { [weak self] data in
-            if let data {
-                self?.resumeDataMap[id] = data
+            if let data, let self {
+                self.lock.lock()
+                self.resumeDataMap[id] = data
+                self.lock.unlock()
             }
         }
+        lock.lock()
         activeTasks.removeValue(forKey: id)
         if var job = jobsByID[id] {
             job.status = .paused
             jobsByID[id] = job
         }
+        lock.unlock()
     }
 
     func resumeDownload(id: UUID) {
-        guard var job = jobsByID[id], job.status == .paused else { return }
+        lock.lock()
+        guard var job = jobsByID[id], job.status == .paused else {
+            lock.unlock()
+            return
+        }
         job.status = .queued
         jobsByID[id] = job
+        lock.unlock()
         startDownload(job)
     }
 
-    func cancelAllDownloads() {
-        for (_, task) in activeTasks {
-            task.cancel()
+    func cancelDownload(id: UUID) {
+        lock.lock()
+        let task = activeTasks[id]
+        activeTasks.removeValue(forKey: id)
+        resumeDataMap.removeValue(forKey: id)
+        if var job = jobsByID[id], job.status.isActive {
+            job.status = .failed
+            jobsByID[id] = job
         }
+        lock.unlock()
+        task?.cancel()
+    }
+
+    func cancelAllDownloads() {
+        lock.lock()
+        let tasks = Array(activeTasks.values)
         activeTasks.removeAll()
         resumeDataMap.removeAll()
         for (id, _) in jobsByID {
@@ -302,6 +365,10 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
                 job.status = .failed
                 jobsByID[id] = job
             }
+        }
+        lock.unlock()
+        for task in tasks {
+            task.cancel()
         }
     }
 
@@ -333,6 +400,9 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
             .appendingPathComponent("versions", isDirectory: true)
             .appendingPathComponent(metadata.id, isDirectory: true)
 
+        let groupID = UUID()
+        let groupName = "安装 Minecraft \(metadata.id)"
+
         var jobs: [DownloadJob] = [
             DownloadJob(
                 title: "Minecraft \(metadata.id) 客户端",
@@ -340,7 +410,9 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
                 remoteURL: metadata.downloads.client.url,
                 destination: versionDirectory.appendingPathComponent("\(metadata.id).jar"),
                 sha1: metadata.downloads.client.sha1,
-                totalBytes: metadata.downloads.client.size
+                totalBytes: metadata.downloads.client.size,
+                taskGroupID: groupID,
+                taskGroupName: groupName
             ),
             DownloadJob(
                 title: "Minecraft \(metadata.id) 资源索引",
@@ -351,7 +423,9 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
                     .appendingPathComponent("indexes", isDirectory: true)
                     .appendingPathComponent("\(metadata.assetIndex.id).json"),
                 sha1: metadata.assetIndex.sha1,
-                totalBytes: metadata.assetIndex.size
+                totalBytes: metadata.assetIndex.size,
+                taskGroupID: groupID,
+                taskGroupName: groupName
             )
         ]
 
@@ -365,7 +439,9 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
                     .appendingPathComponent("libraries", isDirectory: true)
                     .appendingPathComponent(artifact.path),
                 sha1: artifact.sha1,
-                totalBytes: artifact.size
+                totalBytes: artifact.size,
+                taskGroupID: groupID,
+                taskGroupName: groupName
             )
         }
 
@@ -380,7 +456,9 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
                     .appendingPathComponent("libraries", isDirectory: true)
                     .appendingPathComponent(artifact.path),
                 sha1: artifact.sha1,
-                totalBytes: artifact.size
+                totalBytes: artifact.size,
+                taskGroupID: groupID,
+                taskGroupName: groupName
             )
         }
 
@@ -400,7 +478,9 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
     func makeAssetObjectJobs(
         assetIndex: AssetIndex,
         instance: LauncherInstance,
-        source: DownloadSource
+        source: DownloadSource,
+        taskGroupID: UUID? = nil,
+        taskGroupName: String? = nil
     ) -> [DownloadJob] {
         let objectsDirectory = instance.rootDirectory
             .appendingPathComponent(".minecraft", isDirectory: true)
@@ -419,7 +499,9 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
                         .appendingPathComponent(object.pathPrefix, isDirectory: true)
                         .appendingPathComponent(object.hash),
                     sha1: object.hash,
-                    totalBytes: object.size
+                    totalBytes: object.size,
+                    taskGroupID: taskGroupID,
+                    taskGroupName: taskGroupName
                 )
             }
     }
@@ -465,10 +547,15 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
         didFinishDownloadingTo location: URL
     ) {
         guard let uuidString = downloadTask.taskDescription,
-              let jobID = UUID(uuidString: uuidString),
-              var job = jobsByID[jobID] else { return }
+              let jobID = UUID(uuidString: uuidString) else { return }
 
+        lock.lock()
+        guard var job = jobsByID[jobID] else {
+            lock.unlock()
+            return
+        }
         activeTasks.removeValue(forKey: jobID)
+        lock.unlock()
 
         let parentDirectory = job.destination.deletingLastPathComponent()
         do {
@@ -479,7 +566,9 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
             try FileManager.default.moveItem(at: location, to: job.destination)
         } catch {
             job.status = .failed
+            lock.lock()
             jobsByID[jobID] = job
+            lock.unlock()
             onError?(jobID, error)
             return
         }
@@ -489,7 +578,9 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
                 let actualSHA1 = Self.sha1Hex(for: data)
                 if actualSHA1.caseInsensitiveCompare(expectedSHA1) != .orderedSame {
                     job.status = .failed
+                    lock.lock()
                     jobsByID[jobID] = job
+                    lock.unlock()
                     onError?(jobID, DownloadExecutionError.sha1Mismatch(
                         jobTitle: job.title,
                         expected: expectedSHA1,
@@ -502,7 +593,9 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
 
         job.completedBytes = job.totalBytes
         job.status = .completed
+        lock.lock()
         jobsByID[jobID] = job
+        lock.unlock()
         onComplete?(jobID, job)
     }
 
@@ -516,6 +609,7 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
         guard let uuidString = downloadTask.taskDescription,
               let jobID = UUID(uuidString: uuidString) else { return }
 
+        lock.lock()
         if var job = jobsByID[jobID] {
             job.completedBytes = totalBytesWritten
             if totalBytesExpectedToWrite > 0 {
@@ -523,6 +617,7 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
             }
             jobsByID[jobID] = job
         }
+        lock.unlock()
         onProgress?(jobID, totalBytesWritten)
     }
 
@@ -535,17 +630,22 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
               let uuidString = downloadTask.taskDescription,
               let jobID = UUID(uuidString: uuidString) else { return }
 
+        lock.lock()
         activeTasks.removeValue(forKey: jobID)
 
         if let error {
             if (error as NSError).code == NSURLErrorCancelled {
+                lock.unlock()
                 return
             }
             if var job = jobsByID[jobID] {
                 job.status = .failed
                 jobsByID[jobID] = job
             }
+            lock.unlock()
             onError?(jobID, error)
+        } else {
+            lock.unlock()
         }
     }
 
@@ -649,10 +749,16 @@ protocol JavaRuntimeServicing {
     func recommendedMajorVersion(for gameVersion: String) -> Int
     func parseJavaHomeVerboseOutput(_ output: String) -> [JavaRuntime]
     func discoverInstalledRuntimes() async throws -> [JavaRuntime]
+    var portableJDKDirectory: URL { get }
 }
 
 struct JavaRuntimeService: JavaRuntimeServicing {
     var javaHomeExecutable: URL = URL(fileURLWithPath: "/usr/libexec/java_home")
+
+    var portableJDKDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/MMCL/JDK", isDirectory: true)
+    }
 
     func bundledSearchLocations() -> [URL] {
         [
@@ -673,20 +779,154 @@ struct JavaRuntimeService: JavaRuntimeServicing {
     }
 
     func discoverInstalledRuntimes() async throws -> [JavaRuntime] {
+        var runtimes = await discoverViaJavaHome()
+        runtimes.append(contentsOf: discoverSDKMAN())
+        runtimes.append(contentsOf: discoverJetBrainsJREs())
+        runtimes.append(contentsOf: discoverHomebrewJDKs())
+        runtimes.append(contentsOf: discoverPortableJDKs())
+
+        var seen = Set<String>()
+        return runtimes.filter { runtime in
+            let key = runtime.executableURL.path
+            guard !seen.contains(key) else { return false }
+            seen.insert(key)
+            return true
+        }
+    }
+
+    private func discoverViaJavaHome() async -> [JavaRuntime] {
         let process = Process()
         process.executableURL = javaHomeExecutable
         process.arguments = ["-V"]
-
         let outputPipe = Pipe()
         process.standardOutput = outputPipe
         process.standardError = outputPipe
-
-        try process.run()
+        guard (try? process.run()) != nil else { return [] }
         process.waitUntilExit()
-
         let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
         let output = String(decoding: data, as: UTF8.self)
         return parseJavaHomeVerboseOutput(output)
+    }
+
+    private func discoverSDKMAN() -> [JavaRuntime] {
+        let sdkmanDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".sdkman/candidates/java", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: sdkmanDir.path) else { return [] }
+        return scanJavaDirectories(under: sdkmanDir, source: "SDKMAN!")
+    }
+
+    private func discoverJetBrainsJREs() -> [JavaRuntime] {
+        let appsDir = URL(fileURLWithPath: "/Applications")
+        guard let apps = try? FileManager.default.contentsOfDirectory(
+            at: appsDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        var runtimes: [JavaRuntime] = []
+        for app in apps where app.pathExtension == "app" {
+            for subpath in ["Contents/jbr/Contents/Home", "Contents/jre/Contents/Home"] {
+                let home = app.appendingPathComponent(subpath, isDirectory: true)
+                let javaBin = home.appendingPathComponent("bin/java")
+                if FileManager.default.fileExists(atPath: javaBin.path) {
+                    let name = app.deletingPathExtension().lastPathComponent
+                    if let runtime = parseJavaHome(home: home, name: "JetBrains Runtime (\(name))") {
+                        runtimes.append(runtime)
+                    }
+                }
+            }
+        }
+        return runtimes
+    }
+
+    private func discoverHomebrewJDKs() -> [JavaRuntime] {
+        let prefix = URL(fileURLWithPath: "/opt/homebrew/opt")
+        let prefixX86 = URL(fileURLWithPath: "/usr/local/opt")
+        var runtimes: [JavaRuntime] = []
+        for optDir in [prefix, prefixX86] {
+            guard let contents = try? FileManager.default.contentsOfDirectory(
+                at: optDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+            ) else { continue }
+            for item in contents where item.lastPathComponent.hasPrefix("openjdk@") {
+                let home = item.appendingPathComponent("libexec/openjdk.jdk/Contents/Home", isDirectory: true)
+                if FileManager.default.fileExists(atPath: home.appendingPathComponent("bin/java").path) {
+                    if let runtime = parseJavaHome(home: home, name: "Homebrew \(item.lastPathComponent)") {
+                        runtimes.append(runtime)
+                    }
+                }
+            }
+        }
+        return runtimes
+    }
+
+    private func discoverPortableJDKs() -> [JavaRuntime] {
+        let dir = portableJDKDirectory
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return contents.compactMap { item in
+            // Adoptium extracts to jdk-X.Y.Z+NN directory
+            let home: URL
+            if item.lastPathComponent.contains("jdk-") {
+                home = item
+            } else {
+                // Try Contents/Home for .app bundles
+                let appHome = item.appendingPathComponent("Contents/Home", isDirectory: true)
+                if FileManager.default.fileExists(atPath: appHome.appendingPathComponent("bin/java").path) {
+                    home = appHome
+                } else {
+                    home = item
+                }
+            }
+            let javaBin = home.appendingPathComponent("bin/java")
+            guard FileManager.default.fileExists(atPath: javaBin.path) else { return nil }
+            return parseJavaHome(home: home, name: "便携版 \(item.lastPathComponent)")
+        }
+    }
+
+    private func scanJavaDirectories(under directory: URL, source: String) -> [JavaRuntime] {
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return contents.compactMap { item in
+            let home = item
+            let javaBin = home.appendingPathComponent("bin/java")
+            guard FileManager.default.fileExists(atPath: javaBin.path) else { return nil }
+            return parseJavaHome(home: home, name: "\(source) \(item.lastPathComponent)")
+        }
+    }
+
+    private func parseJavaHome(home: URL, name: String) -> JavaRuntime? {
+        let javaBin = home.appendingPathComponent("bin/java")
+        let process = Process()
+        process.executableURL = javaBin
+        process.arguments = ["-version"]
+        let errPipe = Pipe()
+        process.standardError = errPipe
+        guard (try? process.run()) != nil else { return nil }
+        process.waitUntilExit()
+        let data = errPipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(decoding: data, as: UTF8.self)
+        let pattern = #"openjdk version "([0-9]+(?:\.[0-9]+)*)""#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),
+              let versionRange = Range(match.range(at: 1), in: output)
+        else { return nil }
+
+        let version = String(output[versionRange])
+        let majorVersion = Int(version.split(separator: ".").first ?? "") ?? 0
+
+        #if arch(arm64)
+        let arch: RuntimeArchitecture = .arm64
+        #else
+        let arch: RuntimeArchitecture = .x86_64
+        #endif
+
+        return JavaRuntime(
+            name: name,
+            version: version,
+            majorVersion: majorVersion,
+            architecture: arch,
+            executableURL: javaBin
+        )
     }
 
     private func parseJavaHomeLine(_ line: String) -> JavaRuntime? {
@@ -753,11 +993,20 @@ struct LaunchService: LaunchServicing {
         if let metadata, let arguments = metadata.arguments {
             let jvmArguments = expand(arguments.jvm, substitutions: substitutions, operatingSystem: "osx")
             let gameArguments = expand(arguments.game, substitutions: substitutions, operatingSystem: "osx")
+
+            // Auto-detect JVM args for Apple Silicon when using defaults
+            var extraArgs = instance.profile.jvmArguments
+            if extraArgs == ["-XX:+UseG1GC", "-XX:+UnlockExperimentalVMOptions"] || extraArgs.isEmpty {
+                #if arch(arm64)
+                extraArgs = ["-XX:+UseZGC", "-XX:+ZGenerational", "-XX:+UnlockExperimentalVMOptions", "-XX:G1HeapRegionSize=16M"]
+                #endif
+            }
+
             return [
                 java.executableURL.path,
                 "-Xmx\(instance.profile.memoryMegabytes)m"
             ]
-            + instance.profile.jvmArguments
+            + extraArgs
             + jvmArguments
             + [mainClass]
             + gameArguments
@@ -1027,7 +1276,7 @@ enum LaunchExecutionError: LocalizedError, Equatable {
 
 protocol ModrinthServicing {
     var baseURL: URL { get }
-    func search(query: String, facets: [String]?) async throws -> ModrinthSearchResponse
+    func search(query: String, facets: [[String]]?, index: String, offset: Int) async throws -> ModrinthSearchResponse
     func fetchProject(id: String) async throws -> ModrinthProject
     func fetchVersions(projectID: String, gameVersion: String?, loader: String?) async throws -> [ModrinthVersion]
     func downloadFile(from urlString: String, to destination: URL) async throws
@@ -1035,22 +1284,41 @@ protocol ModrinthServicing {
 
 struct ModrinthService: ModrinthServicing {
     let baseURL = URL(string: "https://api.modrinth.com/v2")!
+    let userAgent = "MMCL/1.0 (https://github.com/Lhy723/MMCL)"
 
-    func search(query: String, facets: [String]? = nil) async throws -> ModrinthSearchResponse {
+    private func makeRequest(url: URL) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("https://github.com/Lhy723/MMCL", forHTTPHeaderField: "Referer")
+        return request
+    }
+
+    func search(query: String, facets: [[String]]? = nil, index: String = "relevance", offset: Int = 0) async throws -> ModrinthSearchResponse {
         var components = URLComponents(url: baseURL.appendingPathComponent("search"), resolvingAgainstBaseURL: false)!
         var queryItems = [URLQueryItem(name: "query", value: query)]
         if let facets {
-            queryItems.append(URLQueryItem(name: "facets", value: "[\(facets.joined(separator: ","))]"))
+            let encoded = try JSONEncoder().encode(facets)
+            let facetString = String(data: encoded, encoding: .utf8)!
+            queryItems.append(URLQueryItem(name: "facets", value: facetString))
         }
         queryItems.append(URLQueryItem(name: "limit", value: "20"))
+        queryItems.append(URLQueryItem(name: "index", value: index))
+        if offset > 0 {
+            queryItems.append(URLQueryItem(name: "offset", value: "\(offset)"))
+        }
         components.queryItems = queryItems
-        let (data, _) = try await URLSession.shared.data(from: components.url!)
+        let request = makeRequest(url: components.url!)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw ModrinthError.searchFailed("HTTP \(http.statusCode)")
+        }
         return try JSONDecoder.mmcl.decode(ModrinthSearchResponse.self, from: data)
     }
 
     func fetchProject(id: String) async throws -> ModrinthProject {
         let url = baseURL.appendingPathComponent("project/\(id)")
-        let (data, _) = try await URLSession.shared.data(from: url)
+        let request = makeRequest(url: url)
+        let (data, _) = try await URLSession.shared.data(for: request)
         return try JSONDecoder.mmcl.decode(ModrinthProject.self, from: data)
     }
 
@@ -1066,7 +1334,8 @@ struct ModrinthService: ModrinthServicing {
         if !queryItems.isEmpty {
             components.queryItems = queryItems
         }
-        let (data, _) = try await URLSession.shared.data(from: components.url!)
+        let request = makeRequest(url: components.url!)
+        let (data, _) = try await URLSession.shared.data(for: request)
         return try JSONDecoder.mmcl.decode([ModrinthVersion].self, from: data)
     }
 
@@ -1074,7 +1343,8 @@ struct ModrinthService: ModrinthServicing {
         guard let url = URL(string: urlString) else {
             throw ModrinthError.invalidURL(urlString)
         }
-        let (data, _) = try await URLSession.shared.data(from: url)
+        let request = makeRequest(url: url)
+        let (data, _) = try await URLSession.shared.data(for: request)
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: destination, options: .atomic)
     }
@@ -1082,11 +1352,14 @@ struct ModrinthService: ModrinthServicing {
 
 enum ModrinthError: LocalizedError, Equatable {
     case invalidURL(String)
+    case searchFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .invalidURL(let url):
             return "无效的下载地址：\(url)"
+        case .searchFailed(let detail):
+            return "Modrinth 搜索失败：\(detail)"
         }
     }
 }
@@ -1741,29 +2014,47 @@ struct ServerListService: ServerListServicing {
 }
 
 protocol CurseForgeServicing {
-    func search(query: String, gameVersion: String?) async throws -> [CurseForgeSearchResult]
+    func search(query: String, classId: Int?, gameVersion: String?, apiKey: String) async throws -> [CurseForgeSearchResult]
 }
 
 struct CurseForgeService: CurseForgeServicing {
     let baseURL = URL(string: "https://api.curseforge.com")!
-    let apiKey = "$2a$10$bL4bIL5pUWqfcO7KQtnMReakwtfHbNKh6v1uTpKlzhwoueEJQnPnm"
+    let userAgent = "MMCL/1.0 (https://github.com/Lhy723/MMCL)"
 
-    func search(query: String, gameVersion: String? = nil) async throws -> [CurseForgeSearchResult] {
+    func search(query: String, classId: Int? = nil, gameVersion: String? = nil, apiKey: String) async throws -> [CurseForgeSearchResult] {
         var components = URLComponents(url: baseURL.appendingPathComponent("/v1/mods/search"), resolvingAgainstBaseURL: false)!
         var queryItems = [
             URLQueryItem(name: "gameId", value: "432"),
             URLQueryItem(name: "searchFilter", value: query),
             URLQueryItem(name: "pageSize", value: "20")
         ]
+        if let classId {
+            queryItems.append(URLQueryItem(name: "classId", value: "\(classId)"))
+        }
         if let gv = gameVersion {
             queryItems.append(URLQueryItem(name: "gameVersion", value: gv))
         }
         components.queryItems = queryItems
         var request = URLRequest(url: components.url!)
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "x-api-key")
-        let (data, _) = try await URLSession.shared.data(for: request)
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        let (data, urlResponse) = try await URLSession.shared.data(for: request)
+        if let http = urlResponse as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw CurseForgeError.searchFailed("HTTP \(http.statusCode)")
+        }
         let response = try JSONDecoder().decode(CurseForgeSearchResponse.self, from: data)
         return response.data
+    }
+}
+
+enum CurseForgeError: LocalizedError, Equatable {
+    case searchFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .searchFailed(let detail):
+            return "CurseForge 搜索失败：\(detail)"
+        }
     }
 }
 

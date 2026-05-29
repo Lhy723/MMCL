@@ -8,7 +8,7 @@ struct MMCLApp: App {
         WindowGroup {
             ContentView(store: store)
                 .frame(minWidth: 920, minHeight: 620)
-                .preferredColorScheme(store.colorScheme.swiftUIScheme)
+                .modifier(ConditionalColorScheme(scheme: store.colorScheme))
         }
         .commands {
             CommandGroup(after: .newItem) {
@@ -26,6 +26,18 @@ struct MMCLApp: App {
                 HelpView()
                     .tabItem { Label("帮助", systemImage: "questionmark.circle") }
             }
+        }
+    }
+}
+
+private struct ConditionalColorScheme: ViewModifier {
+    let scheme: AppColorScheme
+
+    func body(content: Content) -> some View {
+        if let colorScheme = scheme.swiftUIScheme {
+            content.preferredColorScheme(colorScheme)
+        } else {
+            content
         }
     }
 }

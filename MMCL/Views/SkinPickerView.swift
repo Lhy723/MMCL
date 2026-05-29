@@ -6,64 +6,28 @@ struct SkinPickerView: View {
     @State private var newSkinName: String = ""
     @State private var newSkinModel: SkinInfo.SkinModel = .steve
     @State private var showFilePicker = false
-    @State private var importSourceURL: URL?
+    @State private var appeared = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("皮肤管理")
-                .font(.largeTitle.weight(.semibold))
-
-            if let account = store.selectedAccount {
-                Text("当前账号：\(account.displayName)")
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack {
-                TextField("皮肤名称", text: $newSkinName)
-                    .frame(maxWidth: 200)
-                Picker("模型", selection: $newSkinModel) {
-                    ForEach(SkinInfo.SkinModel.allCases, id: \.self) { model in
-                        Text(model.label).tag(model)
-                    }
-                }
-                .frame(maxWidth: 120)
-                Button("导入皮肤") {
-                    showFilePicker = true
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(newSkinName.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-
-            Divider()
-
-            if store.availableSkins.isEmpty {
-                Text("暂无皮肤。点击「导入皮肤」添加。")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVGrid(columns: [
-                        GridItem(.adaptive(minimum: 120), spacing: 16)
-                    ], spacing: 16) {
-                        ForEach(store.availableSkins) { skin in
-                            SkinCard(skin: skin) {
-                                store.applySkin(skin)
-                            }
-                        }
-                    }
-                }
-            }
-
-            HStack {
-                Spacer()
-                Button("关闭") {
-                    store.showingSkinPicker = false
-                }
-                .keyboardShortcut(.cancelAction)
+        VStack(alignment: .leading, spacing: 0) {
+            header
+                .padding(.horizontal)
+                .padding(.top)
+            importBar
+                .padding(.horizontal)
+                .padding(.top, 8)
+            skinGrid
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .navigationTitle("皮肤管理")
+        .frame(maxHeight: .infinity, alignment: .top)
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared ? 0 : 8)
+        .onAppear {
+            withAnimation(.mmclSpring(response: 0.4, dampingFraction: 0.85, scale: store.animationDurationScale)) {
+                appeared = true
             }
         }
-        .padding(24)
-        .frame(width: 560, height: 480)
         .onAppear {
             if let account = store.selectedAccount {
                 store.scanSkinsForAccount(account)
@@ -83,42 +47,96 @@ struct SkinPickerView: View {
             }
         }
     }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("皮肤管理")
+                .font(.largeTitle.weight(.semibold))
+            if let account = store.selectedAccount {
+                Text("当前账号：\(account.displayName)")
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("管理 Minecraft 玩家皮肤。")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var importBar: some View {
+        HStack(spacing: 12) {
+            TextField("皮肤名称", text: $newSkinName)
+                .textFieldStyle(.roundedBorder)
+
+            Picker("模型", selection: $newSkinModel) {
+                ForEach(SkinInfo.SkinModel.allCases, id: \.self) { model in
+                    Text(model.label).tag(model)
+                }
+            }
+            .pickerStyle(.menu)
+
+            Button {
+                showFilePicker = true
+            } label: {
+                Label("导入皮肤", systemImage: "plus.circle")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(newSkinName.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+    }
+
+    private var skinGrid: some View {
+        Group {
+            if store.availableSkins.isEmpty {
+                ContentUnavailableView("暂无皮肤", systemImage: "person.crop.rectangle", description: Text("输入名称并导入 PNG 皮肤文件"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(store.availableSkins) { skin in
+                    SkinRow(skin: skin) {
+                        store.applySkin(skin)
+                    }
+                }
+                .listStyle(.inset)
+            }
+        }
+    }
 }
 
-private struct SkinCard: View {
+private struct SkinRow: View {
     let skin: SkinInfo
     let onApply: () -> Void
 
     var body: some View {
-        VStack(spacing: 8) {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(skin.model == .alex ? Color.blue.opacity(0.3) : Color.green.opacity(0.3))
-                .frame(width: 80, height: 120)
+        HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(skin.model == .alex ? Color.blue.opacity(0.2) : Color.green.opacity(0.2))
+                .frame(width: 48, height: 64)
                 .overlay(
-                    VStack {
-                        Image(systemName: "person.fill")
-                            .font(.largeTitle)
-                        Text(skin.model.label)
-                            .font(.caption)
-                    }
+                    Image(systemName: "person.fill")
+                        .foregroundStyle(.secondary)
                 )
 
-            Text(skin.name)
-                .font(.caption)
-                .lineLimit(1)
-
-            Button("应用") {
-                onApply()
+            VStack(alignment: .leading, spacing: 2) {
+                Text(skin.name)
+                    .font(.headline)
+                Text(skin.model.label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(skin.isApplied)
+
+            Spacer()
+
+            if skin.isApplied {
+                Label("已应用", systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            } else {
+                Button("应用") {
+                    onApply()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
         }
-        .padding(8)
-        .background(.background, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(skin.isApplied ? Color.accentColor : Color.clear, lineWidth: 2)
-        )
+        .padding(.vertical, 4)
     }
 }

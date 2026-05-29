@@ -4,6 +4,7 @@ struct ModrinthProjectDetailView: View {
     let project: ModrinthSearchResult
     @ObservedObject var store: LauncherStore
     @State private var versions: [ModrinthVersion] = []
+    @State private var visibleIDs: Set<String> = []
     @State private var isLoading = true
 
     var body: some View {
@@ -28,23 +29,47 @@ struct ModrinthProjectDetailView: View {
                 ProgressView("加载版本列表...")
             } else if versions.isEmpty {
                 ContentUnavailableView("没有可用版本", systemImage: "package", description: Text("此项目没有与当前实例兼容的版本。"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 Text("可用版本")
                     .font(.headline)
 
-                List(versions) { version in
-                    ModrinthVersionRow(version: version) {
-                        if let file = version.files.first(where: { $0.primary }) ?? version.files.first,
-                           let instance = store.selectedInstance {
-                            Task {
-                                await store.installModrinthMod(version: version, file: file, for: instance)
+                if store.selectedInstance == nil {
+                    ContentUnavailableView("未选择实例", systemImage: "person.crop.circle.badge.questionmark", description: Text("请先在启动器页面选择一个实例"))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(versions) { version in
+                                ModrinthVersionRow(version: version) {
+                                    if let file = version.files.first(where: { $0.primary }) ?? version.files.first,
+                                       let instance = store.selectedInstance {
+                                        Task {
+                                            await store.installModrinthMod(version: version, file: file, for: instance)
+                                            store.showingModrinthDetail = false
+                                        }
+                                    }
+                                }
+                                .opacity(visibleIDs.contains(version.id) ? 1 : 0)
+                                .offset(x: visibleIDs.contains(version.id) ? 0 : 20)
+                                .onAppear {
+                                    if !visibleIDs.contains(version.id) {
+                                        withAnimation(.mmclSpring(response: 0.4, dampingFraction: 0.85, scale: store.animationDurationScale)) {
+                                            visibleIDs.insert(version.id)
+                                        }
+                                    }
+                                }
+                                .onDisappear {
+                                    visibleIDs.remove(version.id)
+                                }
                             }
                         }
                     }
+                    .frame(maxHeight: 300)
                 }
-                .listStyle(.plain)
-                .frame(maxHeight: 300)
             }
+
+            Spacer()
 
             HStack {
                 Spacer()
@@ -55,7 +80,7 @@ struct ModrinthProjectDetailView: View {
             }
         }
         .padding(20)
-        .frame(width: 550, height: 480)
+        .frame(width: 550, height: 480, alignment: .top)
         .task {
             await loadVersions()
         }
@@ -64,7 +89,9 @@ struct ModrinthProjectDetailView: View {
     private func loadVersions() async {
         isLoading = true
         do {
-            let loaderFilter: String? = store.selectedInstance.map { loaderName(for: $0.loader) }
+            let loaderFilter: String? = store.selectedInstance.flatMap { instance in
+                loaderName(for: instance.loader)
+            }
             versions = try await store.modrinthService.fetchVersions(
                 projectID: project.id,
                 gameVersion: store.selectedInstance?.gameVersion,
@@ -76,9 +103,9 @@ struct ModrinthProjectDetailView: View {
         isLoading = false
     }
 
-    private func loaderName(for loader: GameLoader) -> String {
+    private func loaderName(for loader: GameLoader) -> String? {
         switch loader {
-        case .vanilla: return ""
+        case .vanilla: return nil
         case .fabric: return "fabric"
         case .quilt: return "quilt"
         case .forge: return "forge"

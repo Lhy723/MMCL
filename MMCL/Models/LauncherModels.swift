@@ -11,6 +11,119 @@ enum GameLoader: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum VersionIsolation: String, Codable, CaseIterable, Identifiable {
+    case off = "关闭"
+    case moddableVersions = "隔离可安装 Mod 的版本"
+    case snapshots = "隔离非正式版"
+    case moddableAndSnapshots = "隔离可安装 Mod 的版本与非正式版"
+    case all = "隔离所有版本"
+
+    var id: String { rawValue }
+
+    var helpText: String {
+        switch self {
+        case .off: return "所有版本共享存档、Mod、资源包"
+        case .moddableVersions: return "Forge/Fabric 等互相独立，原版共享"
+        case .snapshots: return "快照与发布版、远古版本等隔离"
+        case .moddableAndSnapshots: return "同时隔离可安装 Mod 版本与非正式版"
+        case .all: return "不同版本的存档、Mod、资源包均不互通"
+        }
+    }
+}
+
+enum LauncherVisibility: String, Codable, CaseIterable, Identifiable {
+    case closeAfterLaunch = "游戏启动后立即关闭"
+    case hideAndClose = "游戏启动后隐藏，退出后自动关闭"
+    case hideAndReopen = "游戏启动后隐藏，退出后重新打开"
+    case minimize = "游戏启动后最小化"
+    case keep = "游戏启动后仍保持不变"
+
+    var id: String { rawValue }
+}
+
+enum DownloadTabType: String, CaseIterable, Identifiable {
+    case vanilla = "原版游戏"
+    case mod = "Mod"
+    case modpack = "整合包"
+    case dataPack = "数据包"
+    case resourcePack = "资源包"
+    case shader = "光影包"
+    case progress = "下载进度"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .vanilla: return "cube.box"
+        case .mod: return "puzzlepiece.extension"
+        case .modpack: return "shippingbox"
+        case .dataPack: return "doc.text"
+        case .resourcePack: return "photo.stack"
+        case .shader: return "sparkles"
+        case .progress: return "chart.line.uptrend.xyaxis"
+        }
+    }
+}
+
+enum WindowSizeMode: String, Codable, CaseIterable, Identifiable {
+    case fullscreen = "全屏"
+    case `default` = "默认"
+    case launcherSized = "与启动器窗口一致"
+    case custom = "自定义"
+    case maximized = "最大化"
+
+    var id: String { rawValue }
+}
+
+enum FileDownloadSourceMode: String, Codable, CaseIterable, Identifiable {
+    case preferMirror = "镜像源优先"
+    case officialWithFallback = "官方源优先（默认，切镜像）"
+    case preferOfficial = "官方源优先"
+
+    var id: String { rawValue }
+}
+
+enum VersionListSourceMode: String, Codable, CaseIterable, Identifiable {
+    case preferMirror = "镜像源优先"
+    case officialWithFallback = "官方源优先（默认，切镜像）"
+    case preferOfficial = "官方源优先"
+
+    var id: String { rawValue }
+}
+
+enum CommunitySourceMode: String, Codable, CaseIterable, Identifiable {
+    case preferMirror = "镜像源优先"
+    case officialWithFallback = "仅官方慢时切镜像"
+    case preferOfficial = "官方源优先（默认）"
+
+    var id: String { rawValue }
+}
+
+enum FilenameFormat: String, Codable, CaseIterable, Identifiable {
+    case bracketCN = "【译名】"
+    case bracketEN = "[译名]（默认）"
+    case suffixDash = "译名-"
+    case prefixDash = "-译名"
+    case noTranslation = "不翻译"
+
+    var id: String { rawValue }
+}
+
+enum ModListDisplayStyle: String, Codable, CaseIterable, Identifiable {
+    case titleTranslationDetailFilename = "标题显示译名，详情显示文件名"
+    case titleFilenameDetailTranslation = "标题显示文件名，详情显示译名"
+
+    var id: String { rawValue }
+}
+
+enum ProcessPriority: String, Codable, CaseIterable, Identifiable {
+    case high = "高 — 优先保证游戏运行，性能更佳，但可能造成其他程序卡顿"
+    case normal = "中 — 平衡"
+    case low = "低 — 优先保证其他程序运行，适合挂机"
+
+    var id: String { rawValue }
+}
+
 enum InstanceStatus: String, Codable {
     case ready
     case missingFiles
@@ -76,6 +189,23 @@ struct LauncherInstance: Identifiable, Codable, Equatable {
     var subtitle: String {
         "\(gameVersion) · \(loader.rawValue)"
     }
+
+    var blockIcon: String {
+        switch loader {
+        case .forge: return "Anvil"
+        case .fabric: return "Fabric"
+        case .quilt: return "Egg"
+        case .vanilla:
+            if gameVersion.contains("w") || gameVersion.contains("-pre") || gameVersion.contains("rc") {
+                return "CommandBlock"
+            }
+            if gameVersion.contains("Alpha") || gameVersion.contains("Beta") {
+                return "CobbleStone"
+            }
+            return "Grass"
+        }
+    }
+
 }
 
 struct MinecraftVersion: Identifiable, Codable, Equatable {
@@ -217,11 +347,37 @@ struct VersionMetadata: Codable, Equatable {
 
         func applies(to operatingSystem: String) -> Bool {
             guard let rules, !rules.isEmpty else { return true }
-            return rules.reduce(false) { current, rule in
-                let matchesOS = rule.os?.name.map { $0 == operatingSystem } ?? true
-                guard matchesOS else { return current }
-                return rule.action == "allow"
+
+            var result = false
+            for rule in rules {
+                var ruleMatches = true
+
+                if let os = rule.os, let osName = os.name {
+                    if osName == "unknown" {
+                        // "unknown" OS: always matches (no exclusion)
+                    } else if osName == operatingSystem {
+                        // Matches target OS
+                    } else {
+                        ruleMatches = false
+                    }
+                }
+
+                if let features = rule.features, !features.isEmpty {
+                    // PCL: skip quick_play features entirely
+                    if features.keys.contains(where: { $0.contains("quick_play") }) {
+                        ruleMatches = false
+                    }
+                    // PCL: skip is_demo_user features
+                    if features["is_demo_user"] == true {
+                        ruleMatches = false
+                    }
+                }
+
+                if ruleMatches {
+                    result = (rule.action == "allow")
+                }
             }
+            return result
         }
     }
 
@@ -455,6 +611,7 @@ struct DownloadJob: Identifiable, Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case id, title, source, remoteURL, destination, sha1
         case totalBytes, completedBytes, bytesPerSecond, status
+        case taskGroupID, taskGroupName
     }
 
     var id: UUID
@@ -467,6 +624,8 @@ struct DownloadJob: Identifiable, Codable, Equatable {
     var completedBytes: Int64
     var bytesPerSecond: Int64
     var status: DownloadStatus
+    var taskGroupID: UUID?
+    var taskGroupName: String?
 
     /// Resume data for paused downloads (not persisted)
     var resumeData: Data?
@@ -481,7 +640,9 @@ struct DownloadJob: Identifiable, Codable, Equatable {
         totalBytes: Int64,
         completedBytes: Int64 = 0,
         bytesPerSecond: Int64 = 0,
-        status: DownloadStatus = .queued
+        status: DownloadStatus = .queued,
+        taskGroupID: UUID? = nil,
+        taskGroupName: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -493,6 +654,8 @@ struct DownloadJob: Identifiable, Codable, Equatable {
         self.completedBytes = completedBytes
         self.bytesPerSecond = bytesPerSecond
         self.status = status
+        self.taskGroupID = taskGroupID
+        self.taskGroupName = taskGroupName
     }
 
     var progress: Double {
@@ -504,6 +667,34 @@ struct DownloadJob: Identifiable, Codable, Equatable {
         self.completedBytes = max(0, min(completedBytes, totalBytes))
         status = self.completedBytes >= totalBytes ? .completed : .running
     }
+}
+
+struct DownloadTaskGroup: Identifiable {
+    let id: UUID
+    let name: String
+    var jobs: [DownloadJob]
+
+    var totalBytes: Int64 { jobs.reduce(0) { $0 + $1.totalBytes } }
+    var completedBytes: Int64 { jobs.reduce(0) { $0 + $1.completedBytes } }
+    var progress: Double {
+        guard totalBytes > 0 else { return 0 }
+        return min(Double(completedBytes) / Double(totalBytes), 1)
+    }
+
+    var status: DownloadStatus {
+        if jobs.contains(where: { $0.status == .failed }) { return .failed }
+        if jobs.allSatisfy({ $0.status == .completed }) { return .completed }
+        if jobs.contains(where: { $0.status == .running }) { return .running }
+        if jobs.contains(where: { $0.status == .paused }) { return .paused }
+        return .queued
+    }
+
+    var currentFileName: String? {
+        jobs.first(where: { $0.status == .running })?.title
+    }
+
+    var completedCount: Int { jobs.filter { $0.status == .completed }.count }
+    var failedCount: Int { jobs.filter { $0.status == .failed }.count }
 }
 
 struct ModInfo: Identifiable, Equatable {
@@ -543,10 +734,12 @@ struct ContentProject: Identifiable, Codable, Equatable {
     var loaders: [GameLoader]
 }
 
-enum DiagnosticSeverity: String, Codable {
+enum DiagnosticSeverity: String, Codable, CaseIterable, Identifiable {
     case info
     case warning
     case error
+
+    var id: String { rawValue }
 
     var localized: String {
         switch self {
@@ -673,11 +866,48 @@ struct ModrinthSearchResult: Codable, Identifiable, Equatable {
     var downloads: Int
     var iconURL: String?
     var categories: [String]
+    var displayCategories: [String]?
+    var color: Int?
+    var author: String?
+    var dateModified: String?
+
+    var iconURLResolved: URL? {
+        guard let iconURL, let url = URL(string: iconURL) else { return nil }
+        return url
+    }
+
+    var tintColor: Color? {
+        guard let color else { return nil }
+        let r = Double((color >> 16) & 0xFF) / 255.0
+        let g = Double((color >> 8) & 0xFF) / 255.0
+        let b = Double(color & 0xFF) / 255.0
+        return Color(red: r, green: g, blue: b)
+    }
+
+    var formattedDate: String? {
+        guard let dateModified else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let date = formatter.date(from: dateModified) ?? ISO8601DateFormatter().date(from: dateModified) else { return nil }
+        let relative = RelativeDateTimeFormatter()
+        relative.unitsStyle = .short
+        return relative.localizedString(for: date, relativeTo: Date())
+    }
+
+    var displayTags: [String] {
+        (displayCategories ?? categories).prefix(3).map { $0 }
+    }
 
     enum CodingKeys: String, CodingKey {
-        case id, slug, title, description, projectType, downloads
+        case id = "project_id"
+        case slug, title, description
+        case projectType = "project_type"
+        case downloads
         case iconURL = "icon_url"
         case categories
+        case displayCategories = "display_categories"
+        case color, author
+        case dateModified = "date_modified"
     }
 }
 
@@ -916,9 +1146,10 @@ struct JVMPreset: Identifiable, Codable, Equatable {
     var isEnabled: Bool
 
     static let defaults = [
-        JVMPreset(id: UUID(), name: "G1GC（推荐）", arguments: ["-XX:+UseG1GC", "-XX:+UnlockExperimentalVMOptions"], isEnabled: true),
+        JVMPreset(id: UUID(), name: "自动（推荐）", arguments: [], isEnabled: true),
+        JVMPreset(id: UUID(), name: "Apple Silicon 优化", arguments: ["-XX:+UseZGC", "-XX:+ZGenerational", "-XX:+UnlockExperimentalVMOptions", "-XX:G1HeapRegionSize=16M"], isEnabled: false),
+        JVMPreset(id: UUID(), name: "G1GC", arguments: ["-XX:+UseG1GC", "-XX:+UnlockExperimentalVMOptions"], isEnabled: false),
         JVMPreset(id: UUID(), name: "ZGC（低延迟）", arguments: ["-XX:+UseZGC", "-XX:+ZGenerational"], isEnabled: false),
-        JVMPreset(id: UUID(), name: "性能优化", arguments: ["-XX:+UseG1GC", "-XX:+UnlockExperimentalVMOptions", "-XX:G1HeapRegionSize=16M", "-XX:+OptimizeStringConcat"], isEnabled: false),
         JVMPreset(id: UUID(), name: "大内存", arguments: ["-XX:+UseG1GC", "-XX:MaxGCPauseMillis=20", "-XX:+UnlockExperimentalVMOptions", "-XX:G1NewSizePercent=30", "-XX:G1MaxNewSizePercent=40"], isEnabled: false),
     ]
 }
