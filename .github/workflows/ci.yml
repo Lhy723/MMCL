@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
+  build:
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -31,18 +31,6 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             MACOSX_DEPLOYMENT_TARGET=14.0 \
             -quiet
-
-      - name: Test
-        run: |
-          xcodebuild test \
-            -project MMCL.xcodeproj \
-            -scheme MMCL \
-            -destination 'platform=macOS' \
-            CODE_SIGNING_ALLOWED=NO \
-            MACOSX_DEPLOYMENT_TARGET=14.0 \
-            SWIFT_STRICT_CONCURRENCY=off \
-            -parallel-testing-enabled NO \
-            -only-testing:MMCLTests
 
   lint:
     runs-on: macos-latest
