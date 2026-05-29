@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          xcode_path=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          sudo xcode-select -s "$xcode_path"
+
+      - name: Build Release
+        run: |
+          xcodebuild build \
+            -project MMCL.xcodeproj \
+            -scheme MMCL \
+            -destination 'platform=macOS' \
+            -configuration Release \
+            -quiet
+
+      - name: Create DMG
+        run: |
+          app_path=$(find DerivedData/Build/Products/Release -name "MMCL.app" -type d | head -1)
+          hdiutil create -volname "MMCL" \
+            -srcfolder "$app_path" \
+            -ov -format UDZO \
+            "MMCL-${GITHUB_REF_NAME}.dmg"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            MMCL-${{ github.ref_name }}.dmg
+          generate_release_notes: true
