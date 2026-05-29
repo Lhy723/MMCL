@@ -161,6 +161,10 @@ xcodebuild test -project MMCL.xcodeproj -scheme MMCL -destination 'platform=macO
 - [CurseForge](https://www.curseforge.com/) — Mod 搜索 API
 - [Adoptium](https://adoptium.net/) — 便携版 JDK 下载
 
+## Star 趋势 ⭐
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Lhy723/MMCL&type=Date)](https://star-history.com/#Lhy723/MMCL&Date)
+
 ## 许可证 📄
 
 [MIT License](LICENSE)
