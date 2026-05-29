@@ -1,6 +1,7 @@
 import XCTest
 @testable import MMCL
 
+@MainActor
 final class VersionFetchTests: XCTestCase {
     func testVersionManifestServiceFetchesManifestFromFileURL() async throws {
         let root = FileManager.default.temporaryDirectory

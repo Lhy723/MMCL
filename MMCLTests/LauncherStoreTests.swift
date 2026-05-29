@@ -1,6 +1,7 @@
 import XCTest
 @testable import MMCL
 
+@MainActor
 final class LauncherStoreTests: XCTestCase {
     func testStoreBuildsLaunchPreviewForSelectedInstanceAndJava() {
         let instanceID = UUID()

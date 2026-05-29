@@ -1,6 +1,7 @@
 import XCTest
 @testable import MMCL
 
+@MainActor
 final class AssetIndexPlanningTests: XCTestCase {
     func testAssetIndexParsesObjectsAndTotals() throws {
         let index = try VersionManifestService().decodeAssetIndex(from: Data(Self.assetIndexJSON.utf8))
