@@ -1,7 +1,6 @@
 import XCTest
 @testable import MMCL
 
-@MainActor
 final class InstallPlanStoreTests: XCTestCase {
     func testStorePlansVanillaInstallForSelectedInstance() throws {
         let root = FileManager.default.temporaryDirectory

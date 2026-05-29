@@ -1,7 +1,6 @@
 import XCTest
 @testable import MMCL
 
-@MainActor
 final class LauncherServiceTests: XCTestCase {
     func testApplicationSupportRootUsesMMCLDirectory() throws {
         let service = InstanceService(applicationSupportDirectory: URL(fileURLWithPath: "/Users/example/Library/Application Support", isDirectory: true))

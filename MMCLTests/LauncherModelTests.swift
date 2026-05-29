@@ -1,7 +1,6 @@
 import XCTest
 @testable import MMCL
 
-@MainActor
 final class LauncherModelTests: XCTestCase {
     func testLauncherInstanceRoundTripsThroughJSON() throws {
         let root = URL(fileURLWithPath: "/Users/example/Library/Application Support/MMCL/Instances/vanilla")
