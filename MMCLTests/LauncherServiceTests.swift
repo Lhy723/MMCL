@@ -1,6 +1,7 @@
 import XCTest
 @testable import MMCL
 
+@MainActor
 final class LauncherServiceTests: XCTestCase {
     func testApplicationSupportRootUsesMMCLDirectory() throws {
         let service = InstanceService(applicationSupportDirectory: URL(fileURLWithPath: "/Users/example/Library/Application Support", isDirectory: true))
@@ -420,7 +421,7 @@ final class LauncherServiceTests: XCTestCase {
         let json = """
         {
             "hits": [
-                {"id": "AqQJnBxM", "slug": "sodium", "title": "Sodium", "description": "A modern rendering engine", "projectType": "mod", "downloads": 5000000, "categories": ["performance", "optimization"]}
+                {"project_id": "AqQJnBxM", "slug": "sodium", "title": "Sodium", "description": "A modern rendering engine", "project_type": "mod", "downloads": 5000000, "categories": ["performance", "optimization"]}
             ],
             "total_hits": 1
         }

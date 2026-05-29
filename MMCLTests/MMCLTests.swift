@@ -8,6 +8,7 @@
 import XCTest
 @testable import MMCL
 
+@MainActor
 final class MMCLTests: XCTestCase {
 
     override func setUpWithError() throws {
