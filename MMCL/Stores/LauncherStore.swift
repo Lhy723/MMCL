@@ -1520,11 +1520,9 @@ extension LauncherStore {
     }
 
     func pauseDownloads() {
-        for index in downloadJobs.indices {
-            if downloadJobs[index].status == .running {
-                downloadService.pauseDownload(id: downloadJobs[index].id)
-                downloadJobs[index].status = .paused
-            }
+        for index in downloadJobs.indices where downloadJobs[index].status == .running {
+            downloadService.pauseDownload(id: downloadJobs[index].id)
+            downloadJobs[index].status = .paused
         }
         diagnostics.insert(
             DiagnosticReport(
@@ -1538,11 +1536,9 @@ extension LauncherStore {
     }
 
     func resumeDownloads() {
-        for index in downloadJobs.indices {
-            if downloadJobs[index].status == .paused {
-                downloadService.resumeDownload(id: downloadJobs[index].id)
-                downloadJobs[index].status = .running
-            }
+        for index in downloadJobs.indices where downloadJobs[index].status == .paused {
+            downloadService.resumeDownload(id: downloadJobs[index].id)
+            downloadJobs[index].status = .running
         }
     }
 

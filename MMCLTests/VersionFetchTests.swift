@@ -45,6 +45,7 @@ final class VersionFetchTests: XCTestCase {
         XCTAssertEqual(assetIndex.objects["minecraft/sounds/random/pop.ogg"]?.hash, "abcdef0123456789abcdef0123456789abcdef01")
     }
 
+    @MainActor
     func testStoreRefreshesVersionsAndPlansInstallFromFetchedMetadata() async throws {
         let metadataURL = URL(string: "https://example.com/metadata.json")!
         let assetIndexURL = URL(string: "https://piston-meta.mojang.com/v1/packages/assets.json")!

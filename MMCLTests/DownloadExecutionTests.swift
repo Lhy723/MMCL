@@ -78,6 +78,7 @@ final class DownloadExecutionTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
     }
 
+    @MainActor
     func testStoreExecutesQueuedDownloadsAndAddsFailureDiagnostic() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -124,6 +125,7 @@ final class DownloadExecutionTests: XCTestCase {
         XCTAssertTrue(store.diagnostics.first?.summary.contains("失败任务") == true)
     }
 
+    @MainActor
     func testDownloadServiceCancelAndRestart() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
