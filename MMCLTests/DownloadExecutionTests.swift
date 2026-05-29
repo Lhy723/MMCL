@@ -1,6 +1,7 @@
 import XCTest
 @testable import MMCL
 
+@MainActor
 final class DownloadExecutionTests: XCTestCase {
     func testDownloadServiceCopiesFileURLAndVerifiesSHA1() async throws {
         let root = FileManager.default.temporaryDirectory
