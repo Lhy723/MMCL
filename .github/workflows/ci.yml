@@ -28,6 +28,7 @@ jobs:
             -project MMCL.xcodeproj \
             -scheme MMCL \
             -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
             -quiet
 
       - name: Test
@@ -36,6 +37,7 @@ jobs:
             -project MMCL.xcodeproj \
             -scheme MMCL \
             -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
             -only-testing:MMCLTests \
             -quiet
 

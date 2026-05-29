@@ -1,6 +1,7 @@
 <div align="center">
 <img src="docs/logo.png" width="128" alt="MMCL Logo">
 <h1 align="center">MMCL 🎮</h1>
+<h3>Melody Minecraft Launcher</h3>
 
 <p align="center">
   <a href="https://github.com/Lhy723/MMCL/stargazers"><img src="https://img.shields.io/github/stars/Lhy723/MMCL.svg?style=for-the-badge" alt="Stargazers"></a>

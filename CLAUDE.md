@@ -20,7 +20,7 @@ xcodebuild test -project MMCL.xcodeproj -scheme MMCL -destination 'platform=macO
 
 ## Architecture
 
-macOS Minecraft launcher. SwiftUI app with a **Models → Services → Store → Views** layered architecture. References PCL (Plain Craft Launcher) for interaction design and backend management patterns.
+MMCL (Melody Minecraft Launcher) — macOS Minecraft launcher. SwiftUI app with a **Models → Services → Store → Views** layered architecture. References PCL (Plain Craft Launcher) for interaction design and backend management patterns.
 
 ### Core layers
 
