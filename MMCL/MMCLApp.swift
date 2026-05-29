@@ -1,21 +1,43 @@
-//
-//  MMCLApp.swift
-//  MMCL
-//
-//  Created by 星音 on 2026/5/27.
-//
-
 import SwiftUI
-import CoreData
 
 @main
 struct MMCLApp: App {
-    let persistenceController = PersistenceController.shared
+    @StateObject private var store = LauncherStore()
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environment(\.managedObjectContext, persistenceController.container.viewContext)
+            ContentView(store: store)
+                .frame(minWidth: 920, minHeight: 620)
+                .modifier(ConditionalColorScheme(scheme: store.colorScheme))
+        }
+        .commands {
+            CommandGroup(after: .newItem) {
+                Button("新增实例") {
+                    store.showingCreateSheet = true
+                }
+                .keyboardShortcut("n", modifiers: [.command])
+            }
+        }
+
+        Settings {
+            TabView {
+                SettingsView(store: store)
+                    .tabItem { Label("通用", systemImage: "gear") }
+                HelpView()
+                    .tabItem { Label("帮助", systemImage: "questionmark.circle") }
+            }
+        }
+    }
+}
+
+private struct ConditionalColorScheme: ViewModifier {
+    let scheme: AppColorScheme
+
+    func body(content: Content) -> some View {
+        if let colorScheme = scheme.swiftUIScheme {
+            content.preferredColorScheme(colorScheme)
+        } else {
+            content
         }
     }
 }
