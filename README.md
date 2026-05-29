@@ -3,7 +3,7 @@
 <h1 align="center">MMCL 🎮</h1>
 
 <p align="center">
-  <a href="https://github.com/Lhy723/MMCL/stargazers"><img src="https://img.shields.io/github/stars/Lhy723/MMCL?style=social" alt="Stars"></a>
+  <a href="https://github.com/Lhy723/MMCL/stargazers"><img src="https://img.shields.io/github/stars/Lhy723/MMCL" alt="Stars"></a>
   <a href="https://github.com/Lhy723/MMCL/issues"><img src="https://img.shields.io/github/issues/Lhy723/MMCL" alt="Issues"></a>
   <a href="https://github.com/Lhy723/MMCL/network/members"><img src="https://img.shields.io/github/forks/Lhy723/MMCL" alt="Forks"></a>
   <a href="https://github.com/Lhy723/MMCL/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Lhy723/MMCL" alt="License"></a>
