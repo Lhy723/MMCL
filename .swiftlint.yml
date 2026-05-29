@@ -4,12 +4,14 @@ disabled_rules:
   - force_try
   - force_cast
   - force_unwrap
+  - force_unwrapping
   - line_length
   - file_length
   - type_body_length
   - function_body_length
   - static_over_final_class
   - cyclomatic_complexity
+  - for_where
   - closure_body_length
   - large_tuple
   - nesting
