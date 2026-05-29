@@ -285,12 +285,12 @@ struct VersionMetadata: Codable, Equatable {
 
     struct LaunchArgument: Codable, Equatable {
         struct Rule: Codable, Equatable {
-            struct OS: Codable, Equatable {
+            struct OperatingSystem: Codable, Equatable {
                 var name: String?
             }
 
             var action: String
-            var os: OS?
+            var os: OperatingSystem?
             var features: [String: Bool]?
         }
 
@@ -401,7 +401,7 @@ struct VersionMetadata: Codable, Equatable {
     struct Library: Codable, Equatable, Identifiable {
         struct Downloads: Codable, Equatable {
             var artifact: Artifact?
-            var classifiers: [String: Artifact]? = nil
+            var classifiers: [String: Artifact]?
         }
 
         struct Artifact: Codable, Equatable {
@@ -412,7 +412,7 @@ struct VersionMetadata: Codable, Equatable {
         }
 
         var name: String
-        var natives: [String: String]? = nil
+        var natives: [String: String]?
         var downloads: Downloads?
 
         var id: String { name }
@@ -848,8 +848,8 @@ struct CurseForgeSearchResult: Codable, Identifiable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, summary
-        case downloadCount = "downloadCount"
-        case websiteUrl = "websiteUrl"
+        case downloadCount
+        case websiteUrl
     }
 }
 
@@ -1150,7 +1150,7 @@ struct JVMPreset: Identifiable, Codable, Equatable {
         JVMPreset(id: UUID(), name: "Apple Silicon 优化", arguments: ["-XX:+UseZGC", "-XX:+ZGenerational", "-XX:+UnlockExperimentalVMOptions", "-XX:G1HeapRegionSize=16M"], isEnabled: false),
         JVMPreset(id: UUID(), name: "G1GC", arguments: ["-XX:+UseG1GC", "-XX:+UnlockExperimentalVMOptions"], isEnabled: false),
         JVMPreset(id: UUID(), name: "ZGC（低延迟）", arguments: ["-XX:+UseZGC", "-XX:+ZGenerational"], isEnabled: false),
-        JVMPreset(id: UUID(), name: "大内存", arguments: ["-XX:+UseG1GC", "-XX:MaxGCPauseMillis=20", "-XX:+UnlockExperimentalVMOptions", "-XX:G1NewSizePercent=30", "-XX:G1MaxNewSizePercent=40"], isEnabled: false),
+        JVMPreset(id: UUID(), name: "大内存", arguments: ["-XX:+UseG1GC", "-XX:MaxGCPauseMillis=20", "-XX:+UnlockExperimentalVMOptions", "-XX:G1NewSizePercent=30", "-XX:G1MaxNewSizePercent=40"], isEnabled: false)
     ]
 }
 

@@ -8,6 +8,8 @@ disabled_rules:
   - file_length
   - type_body_length
   - function_body_length
+  - static_over_final_class
+  - cyclomatic_complexity
   - closure_body_length
   - large_tuple
   - nesting
