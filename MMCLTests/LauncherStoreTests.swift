@@ -1,8 +1,8 @@
 import XCTest
 @testable import MMCL
 
-@MainActor
 final class LauncherStoreTests: XCTestCase {
+    @MainActor
     func testStoreBuildsLaunchPreviewForSelectedInstanceAndJava() {
         let instanceID = UUID()
         let instance = LauncherInstance(
@@ -41,6 +41,7 @@ final class LauncherStoreTests: XCTestCase {
         XCTAssertTrue(preview?.command.contains("Steve") == true)
     }
 
+    @MainActor
     func testStoreRefreshesJavaRuntimesAndSelectsRecommendedRuntimeForInstance() async {
         let instanceID = UUID()
         let instance = LauncherInstance(
@@ -84,6 +85,7 @@ final class LauncherStoreTests: XCTestCase {
         XCTAssertEqual(store.diagnostics.first?.title, "Java 运行时已刷新")
     }
 
+    @MainActor
     func testStoreLaunchesSelectedInstanceAndRecordsSession() {
         let instanceID = UUID()
         let instance = LauncherInstance(
@@ -127,6 +129,7 @@ final class LauncherStoreTests: XCTestCase {
         XCTAssertTrue(store.diagnostics.first?.summary.contains("42") == true)
     }
 
+    @MainActor
     func testStoreScansSkinsForAccount() {
         let store = LauncherStore(
             instances: [],
@@ -143,6 +146,7 @@ final class LauncherStoreTests: XCTestCase {
         XCTAssertTrue(store.availableSkins.isEmpty)
     }
 
+    @MainActor
     func testStoreBlocksLaunchWhenPreflightFails() {
         let instanceID = UUID()
         let instance = LauncherInstance(
@@ -194,6 +198,7 @@ final class LauncherStoreTests: XCTestCase {
         XCTAssertEqual(store.diagnostics.first?.suggestedActions.first, "生成安装计划并完成下载")
     }
 
+    @MainActor
     func testStoreCreatesInstanceAndSelectsIt() {
         let store = LauncherStore(
             instances: [],
@@ -219,6 +224,7 @@ final class LauncherStoreTests: XCTestCase {
         XCTAssertFalse(store.showingCreateSheet)
     }
 
+    @MainActor
     func testStoreDeletesInstanceAndUpdatesSelection() {
         let instanceID = UUID()
         let instance = LauncherInstance(
@@ -246,6 +252,7 @@ final class LauncherStoreTests: XCTestCase {
         XCTAssertNil(store.selectedInstance)
     }
 
+    @MainActor
     func testStoreInspectsSelectedInstanceAndReportsRepairActions() {
         let instanceID = UUID()
         let instance = LauncherInstance(
@@ -294,6 +301,7 @@ final class LauncherStoreTests: XCTestCase {
         XCTAssertEqual(store.diagnostics.first?.summary, "缺少 asset index。")
     }
 
+    @MainActor
     func testStorePreparesNativeLibrariesAndMarksInstanceReady() throws {
         let instanceID = UUID()
         let root = FileManager.default.temporaryDirectory
@@ -478,6 +486,7 @@ final class LauncherStoreTests: XCTestCase {
         }
     }
 
+    @MainActor
     func testLaunchSessionTrackingResetsOnExit() {
         let store = LauncherStore(
             instances: [],
@@ -490,6 +499,7 @@ final class LauncherStoreTests: XCTestCase {
         XCTAssertNil(store.currentLaunchSession)
     }
 
+    @MainActor
     func testCancelDownloadsMarksAllQueuedAndRunningAsFailed() {
         let store = LauncherStore(
             instances: [],

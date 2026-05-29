@@ -1,7 +1,6 @@
 import XCTest
 @testable import MMCL
 
-@MainActor
 final class VanillaInstallPlanningTests: XCTestCase {
     func testVersionMetadataParsesClientAssetIndexAndLibraries() throws {
         let json = """
