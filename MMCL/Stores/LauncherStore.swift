@@ -1214,7 +1214,7 @@ extension LauncherStore {
             let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
             let tagName = json?["tag_name"] as? String ?? ""
             let version = tagName.replacingOccurrences(of: "v", with: "")
-            if version != currentVersion {
+            if !version.isEmpty && version != currentVersion {
                 latestVersion = version
                 updateAvailable = true
 
