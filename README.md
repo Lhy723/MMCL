@@ -65,6 +65,11 @@ macOS 原生 Minecraft 启动器，基于 SwiftUI 构建，参考 PCL 交互设�
 2. 双击打开，拖入 Applications 文件夹
 3. 首次打开可能需要在「系统设置 → 隐私与安全性」中允许
 
+> **Tips**: 如果提示"已损坏，无法打开"，执行以下命令移除隔离属性：
+> ```shell
+> xattr -cr /Applications/MMCL.app
+> ```
+
 ### 方式二：从源码构建
 
 ```shell
