@@ -4,10 +4,10 @@
 <h3>Melody Minecraft Launcher</h3>
 
 <p align="center">
-  <a href="https://github.com/Lhy723/MMCL/stargazers"><img src="https://img.shields.io/github/stars/Lhy723/MMCL.svg?style=for-the-badge" alt="Stargazers"></a>
-  <a href="https://github.com/Lhy723/MMCL/issues"><img src="https://img.shields.io/github/issues/Lhy723/MMCL.svg?style=for-the-badge" alt="Issues"></a>
-  <a href="https://github.com/Lhy723/MMCL/network/members"><img src="https://img.shields.io/github/forks/Lhy723/MMCL.svg?style=for-the-badge" alt="Forks"></a>
-  <a href="https://github.com/Lhy723/MMCL/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Lhy723/MMCL.svg?style=for-the-badge" alt="License"></a>
+  <a href="https://github.com/Lhy723/MMCL/stargazers"><img src="https://img.shields.io/github/stars/Lhy723/MMCL" alt="Stars"></a>
+  <a href="https://github.com/Lhy723/MMCL/issues"><img src="https://img.shields.io/github/issues/Lhy723/MMCL" alt="Issues"></a>
+  <a href="https://github.com/Lhy723/MMCL/network/members"><img src="https://img.shields.io/github/forks/Lhy723/MMCL" alt="Forks"></a>
+  <a href="https://github.com/Lhy723/MMCL/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Lhy723/MMCL" alt="License"></a>
 </p>
 <br>
 
@@ -166,6 +166,10 @@ xcodebuild test -project MMCL.xcodeproj -scheme MMCL -destination 'platform=macO
 - [Modrinth](https://modrinth.com/) — Mod 搜索 API
 - [CurseForge](https://www.curseforge.com/) — Mod 搜索 API
 - [Adoptium](https://adoptium.net/) — 便携版 JDK 下载
+
+## Star 趋势 ⭐
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Lhy723/MMCL&type=Date)](https://star-history.com/#Lhy723/MMCL&Date)
 
 ## 许可证 📄
 

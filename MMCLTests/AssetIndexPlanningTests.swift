@@ -31,6 +31,7 @@ final class AssetIndexPlanningTests: XCTestCase {
         XCTAssertEqual(jobs[1].remoteURL?.absoluteString, "https://resources.download.minecraft.net/12/1234567890abcdef1234567890abcdef12345678")
     }
 
+    @MainActor
     func testStoreExpandsDownloadedAssetIndexIntoQueuedJobs() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

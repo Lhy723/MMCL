@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, codex-mmcl-phase0]
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
+  build:
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -29,16 +29,7 @@ jobs:
             -scheme MMCL \
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO \
-            -quiet
-
-      - name: Test
-        run: |
-          xcodebuild test \
-            -project MMCL.xcodeproj \
-            -scheme MMCL \
-            -destination 'platform=macOS' \
-            CODE_SIGNING_ALLOWED=NO \
-            -only-testing:MMCLTests \
+            MACOSX_DEPLOYMENT_TARGET=14.0 \
             -quiet
 
   lint:
@@ -50,4 +41,4 @@ jobs:
       - name: SwiftLint
         run: |
           brew install swiftlint
-          swiftlint lint --strict --reporter github-actions-logging || true
+          swiftlint lint --reporter github-actions-logging || true

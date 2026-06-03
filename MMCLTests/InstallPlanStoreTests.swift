@@ -2,6 +2,7 @@ import XCTest
 @testable import MMCL
 
 final class InstallPlanStoreTests: XCTestCase {
+    @MainActor
     func testStorePlansVanillaInstallForSelectedInstance() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
