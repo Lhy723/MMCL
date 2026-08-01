@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import Foundation
+import Security
 
 struct AppUpdateAsset: Equatable {
     let name: String
@@ -15,6 +16,28 @@ struct AppUpdateAsset: Equatable {
 
     var isDiskImage: Bool {
         name.lowercased().hasSuffix(".dmg")
+    }
+
+    var hasTrustedSHA256Digest: Bool {
+        Self.normalizedSHA256Digest(digest) != nil
+    }
+
+    static func normalizedSHA256Digest(_ digest: String?) -> String? {
+        guard let digest else { return nil }
+        let components = digest.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        guard components.count == 2,
+              components[0].lowercased() == "sha256" else {
+            return nil
+        }
+
+        let value = String(components[1]).lowercased()
+        let hexDigits = CharacterSet(charactersIn: "0123456789abcdef")
+        guard value.count == 64,
+              value.unicodeScalars.allSatisfy({ hexDigits.contains($0) }) else {
+            return nil
+        }
+        return value
     }
 
     var architecture: RuntimeArchitecture? {
@@ -74,7 +97,16 @@ struct AppUpdateRelease: Equatable {
     }
 
     func automaticAsset(for architecture: RuntimeArchitecture) -> AppUpdateAsset? {
-        bestAsset(for: architecture, matching: \.isZipArchive)
+        automaticAsset(for: architecture, requireTrustedDigest: true)
+    }
+
+    func automaticAsset(
+        for architecture: RuntimeArchitecture,
+        requireTrustedDigest: Bool
+    ) -> AppUpdateAsset? {
+        bestAsset(for: architecture) { asset in
+            asset.isZipArchive && (!requireTrustedDigest || asset.hasTrustedSHA256Digest)
+        }
     }
 
     func manualAsset(for architecture: RuntimeArchitecture) -> AppUpdateAsset? {
@@ -96,6 +128,7 @@ struct AppUpdateRelease: Equatable {
     }
 
     private static func assetScore(_ asset: AppUpdateAsset, for architecture: RuntimeArchitecture) -> Int? {
+        guard architecture != .unknown else { return nil }
         let normalizedName = asset.name.lowercased()
         var score = 0
         if normalizedName.contains("mmcl") { score += 100 }
@@ -115,8 +148,7 @@ struct AppUpdateRelease: Equatable {
                 guard assetArchitecture == .universal else { return nil }
                 score += 1_000
             case .unknown:
-                guard assetArchitecture == .universal else { return nil }
-                score += 500
+                return nil
             }
         } else {
             // Keep accepting older releases that shipped one generic ZIP/DMG.
@@ -131,7 +163,9 @@ enum AppUpdateError: LocalizedError, Equatable {
     case httpStatus(Int)
     case invalidReleasePayload
     case noAutomaticAsset
+    case missingDigest
     case checksumMismatch
+    case unknownArchitecture
     case archiveExtractionFailed(String)
     case applicationNotFound
     case invalidApplication(String)
@@ -148,9 +182,13 @@ enum AppUpdateError: LocalizedError, Equatable {
         case .invalidReleasePayload:
             return "GitHub Release 信息缺少有效版本号或下载地址。"
         case .noAutomaticAsset:
-            return "该 Release 没有匹配当前 Mac 架构的 MMCL ZIP 文件。"
+            return "该 Release 没有匹配当前 Mac 架构且带可信 SHA-256 的 MMCL ZIP 文件。"
+        case .missingDigest:
+            return "更新包缺少可信 SHA-256 摘要，已禁止自动安装，请打开 Release 页面手动下载。"
         case .checksumMismatch:
             return "更新包校验失败，文件可能已损坏或被篡改。"
+        case .unknownArchitecture:
+            return "无法可靠判断更新包架构，已禁止自动安装。"
         case .archiveExtractionFailed(let details):
             return details.isEmpty ? "更新包解压失败。" : "更新包解压失败：\(details)"
         case .applicationNotFound:
@@ -179,6 +217,7 @@ final class AppUpdateService: AppUpdateServicing {
     typealias ProcessLauncher = (URL, [String]) throws -> Void
     typealias CurrentApplicationURLProvider = () -> URL
     typealias ApplicationTerminator = @MainActor () -> Void
+    typealias ApplicationSignatureValidator = (URL) throws -> Void
 
     static let latestReleaseURL = URL(string: "https://api.github.com/repos/Lhy723/MMCL/releases/latest")!
     private static let applicationBundleIdentifier = "melody.MMCL"
@@ -190,6 +229,8 @@ final class AppUpdateService: AppUpdateServicing {
     private let currentApplicationURLProvider: CurrentApplicationURLProvider
     private let applicationTerminator: ApplicationTerminator
     private let architectureProvider: () -> RuntimeArchitecture
+    private let executableArchitectureProvider: (URL) -> RuntimeArchitecture
+    private let applicationSignatureValidator: ApplicationSignatureValidator
 
     init(
         dataLoader: @escaping DataLoader = { request in
@@ -204,7 +245,9 @@ final class AppUpdateService: AppUpdateServicing {
         applicationTerminator: @escaping ApplicationTerminator = {
             NSApplication.shared.terminate(nil)
         },
-        architectureProvider: @escaping () -> RuntimeArchitecture = { RuntimeArchitecture.currentSystem }
+        architectureProvider: @escaping () -> RuntimeArchitecture = { RuntimeArchitecture.currentSystem },
+        executableArchitectureProvider: @escaping (URL) -> RuntimeArchitecture = { RuntimeArchitecture.detect(from: $0) },
+        applicationSignatureValidator: ApplicationSignatureValidator? = nil
     ) {
         self.dataLoader = dataLoader
         self.downloadLoader = downloadLoader
@@ -213,6 +256,14 @@ final class AppUpdateService: AppUpdateServicing {
         self.currentApplicationURLProvider = currentApplicationURLProvider
         self.applicationTerminator = applicationTerminator
         self.architectureProvider = architectureProvider
+        self.executableArchitectureProvider = executableArchitectureProvider
+        let trustedApplicationURLProvider = currentApplicationURLProvider
+        self.applicationSignatureValidator = applicationSignatureValidator ?? { applicationURL in
+            try Self.validateCodeSignature(
+                of: applicationURL,
+                trustedApplicationURL: trustedApplicationURLProvider()
+            )
+        }
     }
 
     func fetchLatestRelease() async throws -> AppUpdateRelease {
@@ -260,6 +311,12 @@ final class AppUpdateService: AppUpdateServicing {
 
     func installUpdate(_ release: AppUpdateRelease) async throws {
         guard let asset = release.automaticAsset else {
+            if release.automaticAsset(
+                for: release.targetArchitecture,
+                requireTrustedDigest: false
+            ) != nil {
+                throw AppUpdateError.missingDigest
+            }
             throw AppUpdateError.noAutomaticAsset
         }
 
@@ -349,10 +406,8 @@ final class AppUpdateService: AppUpdateServicing {
     }
 
     private func verifyDigest(of fileURL: URL, expected digest: String?) throws {
-        guard let digest,
-              let expected = digest.split(separator: ":", maxSplits: 1).last,
-              digest.lowercased().hasPrefix("sha256:") else {
-            return
+        guard let expected = AppUpdateAsset.normalizedSHA256Digest(digest) else {
+            throw AppUpdateError.missingDigest
         }
 
         let data = try Data(contentsOf: fileURL)
@@ -407,7 +462,15 @@ final class AppUpdateService: AppUpdateServicing {
             throw AppUpdateError.invalidApplication("缺少可执行文件")
         }
 
-        let detectedArchitecture = RuntimeArchitecture.detect(from: executableURL)
+        try applicationSignatureValidator(applicationURL)
+
+        guard expectedArchitecture != .unknown else {
+            throw AppUpdateError.unknownArchitecture
+        }
+        let detectedArchitecture = executableArchitectureProvider(executableURL)
+        guard detectedArchitecture != .unknown else {
+            throw AppUpdateError.unknownArchitecture
+        }
         guard isArchitectureCompatible(detectedArchitecture, with: expectedArchitecture) else {
             throw AppUpdateError.invalidApplication("应用架构与当前 Mac 不匹配")
         }
@@ -417,8 +480,68 @@ final class AppUpdateService: AppUpdateServicing {
         _ actual: RuntimeArchitecture,
         with expected: RuntimeArchitecture
     ) -> Bool {
-        guard expected != .unknown, actual != .unknown else { return true }
+        guard expected != .unknown, actual != .unknown else { return false }
         return actual == expected || actual == .universal
+    }
+
+    private static func validateCodeSignature(
+        of applicationURL: URL,
+        trustedApplicationURL: URL
+    ) throws {
+        let trustedCode = try staticCode(at: trustedApplicationURL)
+        let candidateCode = try staticCode(at: applicationURL)
+
+        guard SecStaticCodeCheckValidity(trustedCode, [], nil) == errSecSuccess else {
+            throw AppUpdateError.invalidApplication("当前应用代码签名无效")
+        }
+        guard SecStaticCodeCheckValidity(candidateCode, [], nil) == errSecSuccess else {
+            throw AppUpdateError.invalidApplication("缺少有效代码签名")
+        }
+
+        let trustedInfo = try signingInformation(for: trustedCode)
+        let candidateInfo = try signingInformation(for: candidateCode)
+        guard let trustedIdentifier = trustedInfo[kSecCodeInfoIdentifier] as? String,
+              trustedIdentifier == applicationBundleIdentifier,
+              let trustedTeamID = trustedInfo[kSecCodeInfoTeamIdentifier] as? String,
+              !trustedTeamID.isEmpty else {
+            throw AppUpdateError.invalidApplication("当前应用缺少可信 Team ID")
+        }
+        guard let candidateIdentifier = candidateInfo[kSecCodeInfoIdentifier] as? String,
+              candidateIdentifier == applicationBundleIdentifier else {
+            throw AppUpdateError.invalidApplication("代码签名标识符不匹配")
+        }
+        guard let candidateTeamID = candidateInfo[kSecCodeInfoTeamIdentifier] as? String,
+              candidateTeamID == trustedTeamID else {
+            throw AppUpdateError.invalidApplication("代码签名 Team ID 不匹配")
+        }
+
+        var designatedRequirement: SecRequirement?
+        guard SecCodeCopyDesignatedRequirement(trustedCode, [], &designatedRequirement) == errSecSuccess,
+              let designatedRequirement,
+              SecStaticCodeCheckValidity(candidateCode, [], designatedRequirement) == errSecSuccess else {
+            throw AppUpdateError.invalidApplication("代码签名 designated requirement 不匹配")
+        }
+    }
+
+    private static func staticCode(at url: URL) throws -> SecStaticCode {
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(url.resolvingSymlinksInPath() as CFURL, [], &code) == errSecSuccess,
+              let code else {
+            throw AppUpdateError.invalidApplication("无法读取代码签名")
+        }
+        return code
+    }
+
+    private static func signingInformation(for code: SecStaticCode) throws -> NSDictionary {
+        var information: CFDictionary?
+        let flags = SecCSFlags(
+            rawValue: SecCSFlags.RawValue(kSecCSSigningInformation | kSecCSRequirementInformation)
+        )
+        guard SecCodeCopySigningInformation(code, flags, &information) == errSecSuccess,
+              let information else {
+            throw AppUpdateError.invalidApplication("无法读取代码签名信息")
+        }
+        return information as NSDictionary
     }
 
     private static func validateHTTPResponse(_ response: URLResponse) throws {

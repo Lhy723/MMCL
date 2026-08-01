@@ -1231,7 +1231,7 @@ final class LauncherStoreTests: XCTestCase {
 
     @MainActor
     func testStoreExposesNewGitHubReleaseAndAutomaticZIPAsset() async {
-        let service = StubAppUpdateService(release: Self.makeUpdateRelease(version: "0.1.2"))
+        let service = StubAppUpdateService(release: Self.makeUpdateRelease(version: "0.1.3"))
         let store = LauncherStore(
             instances: [],
             downloadJobs: [],
@@ -1245,14 +1245,14 @@ final class LauncherStoreTests: XCTestCase {
         await store.checkForUpdates(showDiagnostics: false)
 
         XCTAssertTrue(store.updateAvailable)
-        XCTAssertEqual(store.latestVersion, "0.1.2")
+        XCTAssertEqual(store.latestVersion, "0.1.3")
         XCTAssertEqual(store.updateDownloadURL, service.release.automaticAsset?.browserDownloadURL)
         XCTAssertEqual(store.updateReleaseURL, service.release.htmlURL)
     }
 
     @MainActor
     func testStoreDelegatesUpdateInstallationToReleaseService() async {
-        let service = StubAppUpdateService(release: Self.makeUpdateRelease(version: "0.1.2"))
+        let service = StubAppUpdateService(release: Self.makeUpdateRelease(version: "0.1.3"))
         let store = LauncherStore(
             instances: [],
             downloadJobs: [],
@@ -1283,9 +1283,10 @@ final class LauncherStoreTests: XCTestCase {
                     browserDownloadURL: URL(string: "https://example.com/MMCL-v\(version).zip")!,
                     contentType: "application/zip",
                     size: 1,
-                    digest: nil
+                    digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
                 )
-            ]
+            ],
+            targetArchitecture: .arm64
         )
     }
 
