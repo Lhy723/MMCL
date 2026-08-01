@@ -458,8 +458,8 @@ final class LauncherStoreTests: XCTestCase {
             loader: GameLoader,
             profile: LaunchProfile
         ) throws -> LauncherInstance {
-            let slug = InstanceService.slug(for: name)
-            let instanceRoot = instancesDirectory.appendingPathComponent(slug, isDirectory: true)
+            let instanceID = UUID()
+            let instanceRoot = instancesDirectory.appendingPathComponent(instanceID.uuidString, isDirectory: true)
             try FileManager.default.createDirectory(at: instanceRoot, withIntermediateDirectories: true)
             try FileManager.default.createDirectory(
                 at: instanceRoot.appendingPathComponent(".minecraft", isDirectory: true),
@@ -474,6 +474,7 @@ final class LauncherStoreTests: XCTestCase {
                 withIntermediateDirectories: true
             )
             let instance = LauncherInstance(
+                id: instanceID,
                 name: name,
                 gameVersion: gameVersion,
                 loader: loader,
@@ -486,6 +487,25 @@ final class LauncherStoreTests: XCTestCase {
                 options: .atomic
             )
             return instance
+        }
+
+        func copyInstance(_ instance: LauncherInstance, name: String) throws -> LauncherInstance {
+            let copyID = UUID()
+            let copyRoot = instancesDirectory.appendingPathComponent(copyID.uuidString, isDirectory: true)
+            let copy = LauncherInstance(
+                id: copyID,
+                name: name,
+                gameVersion: instance.gameVersion,
+                loader: instance.loader,
+                rootDirectory: copyRoot,
+                profile: instance.profile,
+                status: instance.status,
+                lastPlayedAt: instance.lastPlayedAt
+            )
+            let fileManager = FileManager.default
+            try fileManager.copyItem(at: instance.rootDirectory, to: copyRoot)
+            try encode(copy).write(to: instanceFileURL(for: copy), options: .atomic)
+            return copy
         }
 
         func loadAllInstances() throws -> [LauncherInstance] {

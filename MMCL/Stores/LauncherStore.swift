@@ -527,20 +527,8 @@ final class LauncherStore: ObservableObject {
 
     func copyInstance(_ instance: LauncherInstance) {
         let newName = "\(instance.name)（副本）"
-        let profile = LaunchProfile(
-            offlineUsername: instance.profile.offlineUsername,
-            memoryMegabytes: instance.profile.memoryMegabytes,
-            jvmArguments: instance.profile.jvmArguments,
-            resolutionWidth: instance.profile.resolutionWidth,
-            resolutionHeight: instance.profile.resolutionHeight
-        )
         do {
-            let copy = try instanceService.createInstance(
-                name: newName,
-                gameVersion: instance.gameVersion,
-                loader: instance.loader,
-                profile: profile
-            )
+            let copy = try instanceService.copyInstance(instance, name: newName)
             instances.append(copy)
             selectedSection = .launcher
             launcherSelectedInstanceID = copy.id

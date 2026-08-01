@@ -11,10 +11,22 @@ protocol InstanceServicing {
         loader: GameLoader,
         profile: LaunchProfile
     ) throws -> LauncherInstance
+    func copyInstance(_ instance: LauncherInstance, name: String) throws -> LauncherInstance
     func loadAllInstances() throws -> [LauncherInstance]
     func instanceFileURL(for instance: LauncherInstance) -> URL
     func encode(_ instance: LauncherInstance) throws -> Data
     func decode(from data: Data) throws -> LauncherInstance
+}
+
+enum InstanceServiceError: LocalizedError, Equatable {
+    case directoryAlreadyExists(URL)
+
+    var errorDescription: String? {
+        switch self {
+        case .directoryAlreadyExists(let directory):
+            return "实例目录已存在：\(directory.path)"
+        }
+    }
 }
 
 struct InstanceService: InstanceServicing {
@@ -38,9 +50,10 @@ struct InstanceService: InstanceServicing {
         loader: GameLoader,
         profile: LaunchProfile
     ) throws -> LauncherInstance {
-        let slug = Self.slug(for: name)
-        let instanceRoot = instancesDirectory.appendingPathComponent(slug, isDirectory: true)
+        let instanceID = UUID()
+        let instanceRoot = instancesDirectory.appendingPathComponent(instanceID.uuidString, isDirectory: true)
         let instance = LauncherInstance(
+            id: instanceID,
             name: name,
             gameVersion: gameVersion,
             loader: loader,
@@ -50,22 +63,62 @@ struct InstanceService: InstanceServicing {
         )
 
         let fileManager = FileManager.default
-        try fileManager.createDirectory(at: instanceRoot, withIntermediateDirectories: true)
-        try fileManager.createDirectory(
-            at: instanceRoot.appendingPathComponent(".minecraft", isDirectory: true),
-            withIntermediateDirectories: true
-        )
-        try fileManager.createDirectory(
-            at: instanceRoot.appendingPathComponent("logs", isDirectory: true),
-            withIntermediateDirectories: true
-        )
-        try fileManager.createDirectory(
-            at: instanceRoot.appendingPathComponent("mods", isDirectory: true),
-            withIntermediateDirectories: true
-        )
-        try encode(instance).write(to: instanceFileURL(for: instance), options: .atomic)
+        try fileManager.createDirectory(at: instancesDirectory, withIntermediateDirectories: true)
+        guard !fileManager.fileExists(atPath: instanceRoot.path) else {
+            throw InstanceServiceError.directoryAlreadyExists(instanceRoot)
+        }
+
+        try fileManager.createDirectory(at: instanceRoot, withIntermediateDirectories: false)
+        do {
+            try fileManager.createDirectory(
+                at: instanceRoot.appendingPathComponent(".minecraft", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+            try fileManager.createDirectory(
+                at: instanceRoot.appendingPathComponent("logs", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+            try fileManager.createDirectory(
+                at: instanceRoot.appendingPathComponent("mods", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+            try encode(instance).write(to: instanceFileURL(for: instance), options: .atomic)
+        } catch {
+            try? fileManager.removeItem(at: instanceRoot)
+            throw error
+        }
 
         return instance
+    }
+
+    func copyInstance(_ instance: LauncherInstance, name: String) throws -> LauncherInstance {
+        let copyID = UUID()
+        let copyRoot = instancesDirectory.appendingPathComponent(copyID.uuidString, isDirectory: true)
+        let copy = LauncherInstance(
+            id: copyID,
+            name: name,
+            gameVersion: instance.gameVersion,
+            loader: instance.loader,
+            rootDirectory: copyRoot,
+            profile: instance.profile,
+            status: instance.status,
+            lastPlayedAt: instance.lastPlayedAt
+        )
+
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: instancesDirectory, withIntermediateDirectories: true)
+        guard !fileManager.fileExists(atPath: copyRoot.path) else {
+            throw InstanceServiceError.directoryAlreadyExists(copyRoot)
+        }
+
+        do {
+            try fileManager.copyItem(at: instance.rootDirectory, to: copyRoot)
+            try encode(copy).write(to: instanceFileURL(for: copy), options: .atomic)
+            return copy
+        } catch {
+            try? fileManager.removeItem(at: copyRoot)
+            throw error
+        }
     }
 
     func loadAllInstances() throws -> [LauncherInstance] {
@@ -99,6 +152,7 @@ struct InstanceService: InstanceServicing {
         try JSONDecoder.mmcl.decode(LauncherInstance.self, from: data)
     }
 
+    // Kept for compatibility with legacy callers. New instance directories use UUIDs.
     static func slug(for name: String) -> String {
         let transliterations: [Character: String] = [
             "原": "yuan", "版": "ban", "生": "sheng", "存": "cun"

@@ -178,7 +178,8 @@ final class VanillaInstallPlanningTests: XCTestCase {
         )
 
         XCTAssertEqual(instance.name, "原版 生存!")
-        XCTAssertEqual(instance.rootDirectory.lastPathComponent, "yuan-ban-sheng-cun")
+        XCTAssertEqual(instance.rootDirectory.deletingLastPathComponent().path, service.instancesDirectory.path)
+        XCTAssertNotNil(UUID(uuidString: instance.rootDirectory.lastPathComponent))
         XCTAssertTrue(FileManager.default.fileExists(atPath: service.instanceFileURL(for: instance).path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: instance.rootDirectory.appendingPathComponent(".minecraft").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: instance.rootDirectory.appendingPathComponent("logs").path))
@@ -186,6 +187,49 @@ final class VanillaInstallPlanningTests: XCTestCase {
 
         let saved = try service.decode(from: Data(contentsOf: service.instanceFileURL(for: instance)))
         XCTAssertEqual(saved, instance)
+    }
+
+    func testInstanceServiceCopiesInstanceIntoIndependentDirectory() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+        let service = InstanceService(applicationSupportDirectory: temporaryRoot)
+        let profile = LaunchProfile(
+            offlineUsername: "Steve",
+            memoryMegabytes: 4096,
+            jvmArguments: ["-XX:+UseG1GC"],
+            resolutionWidth: 854,
+            resolutionHeight: 480
+        )
+
+        let original = try service.createInstance(
+            name: "原版生存",
+            gameVersion: "1.21.5",
+            loader: .vanilla,
+            profile: profile
+        )
+        let originalMod = original.rootDirectory
+            .appendingPathComponent("mods", isDirectory: true)
+            .appendingPathComponent("example.jar")
+        try Data("mod contents".utf8).write(to: originalMod)
+
+        let copy = try service.copyInstance(original, name: "原版生存（副本）")
+
+        XCTAssertNotEqual(copy.id, original.id)
+        XCTAssertNotEqual(copy.rootDirectory, original.rootDirectory)
+        XCTAssertNotEqual(copy.rootDirectory.lastPathComponent, original.rootDirectory.lastPathComponent)
+        XCTAssertEqual(
+            try Data(contentsOf: copy.rootDirectory.appendingPathComponent("mods/example.jar")),
+            Data("mod contents".utf8)
+        )
+
+        let savedOriginal = try service.decode(from: Data(contentsOf: service.instanceFileURL(for: original)))
+        let savedCopy = try service.decode(from: Data(contentsOf: service.instanceFileURL(for: copy)))
+        XCTAssertEqual(savedOriginal.id, original.id)
+        XCTAssertEqual(savedOriginal.rootDirectory, original.rootDirectory)
+        XCTAssertEqual(savedCopy.id, copy.id)
+        XCTAssertEqual(savedCopy.name, "原版生存（副本）")
+        XCTAssertEqual(savedCopy.rootDirectory, copy.rootDirectory)
     }
 
     func testDownloadServicePreparesNativeLibraries() throws {
