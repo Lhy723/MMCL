@@ -147,6 +147,7 @@ final class LauncherStore: ObservableObject {
     private let diagnosticService: DiagnosticServicing
     private let skinService: SkinServicing
     private let serverListService: ServerListServicing
+    private let accountPersistence: AccountPersistence
 
     init(
         instances: [LauncherInstance] = [],
@@ -170,8 +171,11 @@ final class LauncherStore: ObservableObject {
         authService: AuthServicing = AuthService(),
         diagnosticService: DiagnosticServicing = DiagnosticService(),
         skinService: SkinServicing = SkinService(),
-        serverListService: ServerListServicing = ServerListService()
+        serverListService: ServerListServicing = ServerListService(),
+        accountPersistence: AccountPersistence? = nil
     ) {
+        let resolvedAccountPersistence = accountPersistence ?? AccountPersistence()
+
         if instances.isEmpty {
             self.instances = (try? instanceService.loadAllInstances()) ?? []
         } else {
@@ -198,6 +202,7 @@ final class LauncherStore: ObservableObject {
         self.diagnosticService = diagnosticService
         self.skinService = skinService
         self.serverListService = serverListService
+        self.accountPersistence = resolvedAccountPersistence
         self.selectedJavaRuntimeID = javaRuntimes.first?.id
         self.selectedSection = .launcher
 
@@ -211,12 +216,12 @@ final class LauncherStore: ObservableObject {
         }
 
         // Load persisted accounts; create default offline if none
-        let loaded = Self.loadAccountsFromDisk()
+        let loaded = resolvedAccountPersistence.loadAccounts()
         if loaded.isEmpty {
             let defaultAccount = MinecraftAccount(username: defaultOfflineUsername, type: .offline)
             self.accounts = [defaultAccount]
             self.selectedAccountID = defaultAccount.id
-            Self.saveAccountsToDisk([defaultAccount])
+            try? resolvedAccountPersistence.saveAccounts([defaultAccount])
         } else {
             self.accounts = loaded
             self.selectedAccountID = loaded.first?.id
@@ -269,7 +274,7 @@ final class LauncherStore: ObservableObject {
             let mcToken = try await authService.exchangeForMinecraftToken(xstsToken: xstsToken.token)
             let profile = try await authService.fetchMinecraftProfile(accessToken: mcToken.accessToken)
 
-            let account = MinecraftAccount(
+            var account = MinecraftAccount(
                 username: profile.name,
                 uuid: profile.id,
                 accessToken: mcToken.accessToken,
@@ -278,11 +283,16 @@ final class LauncherStore: ObservableObject {
                 type: .microsoft
             )
 
-            if !accounts.contains(where: { $0.uuid == account.uuid }) {
+            if let existingIndex = accounts.firstIndex(where: { $0.type == .microsoft && $0.uuid == account.uuid }) {
+                // Keep the persisted account ID so refreshing/re-authenticating does not
+                // leave credentials behind under the previous Keychain key.
+                account.id = accounts[existingIndex].id
+                accounts[existingIndex] = account
+            } else {
                 accounts.append(account)
             }
             selectedAccountID = account.id
-            Self.saveAccountsToDisk(accounts)
+            try accountPersistence.saveAccounts(accounts)
             isLoggingIn = false
             deviceCodeMessage = ""
             diagnostics.insert(
@@ -313,47 +323,69 @@ final class LauncherStore: ObservableObject {
         let account = MinecraftAccount(username: username, type: .offline)
         accounts.append(account)
         selectedAccountID = account.id
-        Self.saveAccountsToDisk(accounts)
+        do {
+            try persistAccounts()
+        } catch {
+            reportAccountPersistenceError(error)
+        }
     }
 
     func deleteAccount(_ account: MinecraftAccount) {
+        let previousAccounts = accounts
+        let previousSelection = selectedAccountID
         accounts.removeAll { $0.id == account.id }
         if selectedAccountID == account.id {
             selectedAccountID = accounts.first?.id
         }
-        Self.saveAccountsToDisk(accounts)
+
+        do {
+            try accountPersistence.deleteCredentials(for: account.id)
+            try persistAccounts()
+        } catch {
+            accounts = previousAccounts
+            selectedAccountID = previousSelection
+            // Restore the credential if it was removed before metadata persistence failed.
+            try? accountPersistence.saveAccounts(previousAccounts)
+            reportAccountPersistenceError(error)
+        }
     }
 
     func updateAccountUsername(_ account: MinecraftAccount, newUsername: String) {
         guard let index = accounts.firstIndex(where: { $0.id == account.id }) else { return }
+        let previousUsername = accounts[index].username
         accounts[index].username = newUsername
-        Self.saveAccountsToDisk(accounts)
+        do {
+            try persistAccounts()
+        } catch {
+            accounts[index].username = previousUsername
+            reportAccountPersistenceError(error)
+        }
     }
 
     // MARK: - Account Persistence
 
-    private static var accountsDirectoryURL: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("MMCL", isDirectory: true)
-    }
-
-    private static var accountsFileURL: URL {
-        accountsDirectoryURL.appendingPathComponent("accounts.json")
-    }
-
     static func loadAccountsFromDisk() -> [MinecraftAccount] {
-        let url = accountsFileURL
-        guard let data = try? Data(contentsOf: url) else { return [] }
-        return (try? JSONDecoder.mmcl.decode([MinecraftAccount].self, from: data)) ?? []
+        AccountPersistence().loadAccounts()
     }
 
     static func saveAccountsToDisk(_ accounts: [MinecraftAccount]) {
-        let url = accountsFileURL
-        let dir = accountsDirectoryURL
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        if let data = try? JSONEncoder.mmcl.encode(accounts) {
-            try? data.write(to: url, options: .atomic)
-        }
+        try? AccountPersistence().saveAccounts(accounts)
+    }
+
+    private func persistAccounts() throws {
+        try accountPersistence.saveAccounts(accounts)
+    }
+
+    private func reportAccountPersistenceError(_ error: Error) {
+        diagnostics.insert(
+            DiagnosticReport(
+                title: "账号凭据保存失败",
+                severity: .error,
+                summary: error.localizedDescription,
+                suggestedActions: ["检查 macOS 钥匙串权限", "稍后重试"]
+            ),
+            at: 0
+        )
     }
 
     var selectedAccount: MinecraftAccount? {
@@ -1868,6 +1900,7 @@ extension LauncherStore {
             let existingUUIDs = Set(accounts.map(\.uuid))
             let newAccounts = export.accounts.filter { !existingUUIDs.contains($0.uuid) }
             accounts.append(contentsOf: newAccounts)
+            try persistAccounts()
 
             // Apply settings
             defaultMemoryMegabytes = export.settings.defaultMemoryMegabytes

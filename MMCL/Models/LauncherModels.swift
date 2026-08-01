@@ -995,6 +995,17 @@ struct MinecraftAccount: Codable, Equatable, Identifiable {
         case microsoft
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case username
+        case uuid
+        case accessToken
+        case refreshToken
+        case expiresAt
+        case type
+        case appliedSkin
+    }
+
     var displayName: String {
         switch type {
         case .offline: return "\(username)（离线）"
@@ -1011,6 +1022,31 @@ struct MinecraftAccount: Codable, Equatable, Identifiable {
         self.expiresAt = expiresAt
         self.type = type
         self.appliedSkin = appliedSkin
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decode(UUID.self, forKey: .id),
+            username: try container.decode(String.self, forKey: .username),
+            uuid: try container.decodeIfPresent(String.self, forKey: .uuid) ?? "",
+            accessToken: try container.decodeIfPresent(String.self, forKey: .accessToken) ?? "",
+            refreshToken: try container.decodeIfPresent(String.self, forKey: .refreshToken) ?? "",
+            expiresAt: try container.decodeIfPresent(Date.self, forKey: .expiresAt) ?? Date(),
+            type: try container.decodeIfPresent(AccountType.self, forKey: .type) ?? .offline,
+            appliedSkin: try container.decodeIfPresent(SkinInfo.self, forKey: .appliedSkin)
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(username, forKey: .username)
+        try container.encode(uuid, forKey: .uuid)
+        try container.encode(expiresAt, forKey: .expiresAt)
+        try container.encode(type, forKey: .type)
+        try container.encodeIfPresent(appliedSkin, forKey: .appliedSkin)
+        // Authentication tokens are runtime credentials and must never be serialized.
     }
 }
 
