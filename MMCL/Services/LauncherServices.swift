@@ -372,7 +372,7 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
     func pauseDownload(id: UUID) {
         lock.lock()
         let task = activeTasks[id]
-        if let task {
+        if task != nil {
             activeTasks.removeValue(forKey: id)
             if var job = jobsByID[id] {
                 job.status = .paused
