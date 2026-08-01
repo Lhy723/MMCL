@@ -357,6 +357,66 @@ final class LauncherStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testStoreReportsJDKInstallFailureWhenRescanMissesInstalledRuntime() async {
+        let javaRuntimeService = StubJavaRuntimeService(
+            runtimes: [],
+            portableDirectory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("MMCL-JDK-rescan-miss-\(UUID().uuidString)", isDirectory: true)
+        )
+        let store = LauncherStore(
+            instances: [],
+            downloadJobs: [],
+            featuredProjects: [],
+            diagnostics: [],
+            javaRuntimes: [],
+            availableVersions: [],
+            javaRuntimeService: javaRuntimeService,
+            portableJDKInstaller: SuccessfulPortableJDKInstaller()
+        )
+
+        await store.installJDK(majorVersion: 21)
+
+        XCTAssertEqual(store.jdkInstallProgress, 0)
+        XCTAssertEqual(store.diagnostics.first?.title, "Java 安装失败")
+        XCTAssertTrue(store.diagnostics.first?.summary.contains("重新扫描未发现") == true)
+        XCTAssertFalse(store.diagnostics.contains { $0.title == "Java 21 安装完成" })
+    }
+
+    @MainActor
+    func testStoreReportsJDKInstallSuccessOnlyAfterRuntimeAppearsInRescan() async {
+        let portableDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MMCL-JDK-rescan-success-\(UUID().uuidString)", isDirectory: true)
+        let javaRuntimeService = StubJavaRuntimeService(
+            runtimes: [
+                JavaRuntime(
+                    name: "便携版 JDK 21",
+                    version: "21.0.3",
+                    majorVersion: 21,
+                    architecture: .arm64,
+                    executableURL: portableDirectory
+                        .appendingPathComponent("jdk-21.0.3/Contents/Home/bin/java")
+                )
+            ],
+            portableDirectory: portableDirectory
+        )
+        let store = LauncherStore(
+            instances: [],
+            downloadJobs: [],
+            featuredProjects: [],
+            diagnostics: [],
+            javaRuntimes: [],
+            availableVersions: [],
+            javaRuntimeService: javaRuntimeService,
+            portableJDKInstaller: SuccessfulPortableJDKInstaller()
+        )
+
+        await store.installJDK(majorVersion: 21)
+
+        XCTAssertEqual(store.jdkInstallProgress, 1)
+        XCTAssertEqual(store.diagnostics.first?.title, "Java 21 安装完成")
+    }
+
+    @MainActor
     func testStoreLaunchesSelectedInstanceAndRecordsSession() async {
         let instanceID = UUID()
         let instance = LauncherInstance(
@@ -933,9 +993,19 @@ final class LauncherStoreTests: XCTestCase {
 
     private struct StubJavaRuntimeService: JavaRuntimeServicing {
         let runtimes: [JavaRuntime]
+        let portableDirectory: URL
+
+        init(
+            runtimes: [JavaRuntime],
+            portableDirectory: URL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("MMCL-JDK-Test", isDirectory: true)
+        ) {
+            self.runtimes = runtimes
+            self.portableDirectory = portableDirectory
+        }
 
         var portableJDKDirectory: URL {
-            FileManager.default.temporaryDirectory.appendingPathComponent("MMCL-JDK-Test")
+            portableDirectory
         }
 
         func bundledSearchLocations() -> [URL] {
@@ -1274,6 +1344,14 @@ private final class StubAppUpdateService: AppUpdateServicing {
     func installUpdate(_ release: AppUpdateRelease) async throws {
         installedRelease = release
     }
+}
+
+private struct SuccessfulPortableJDKInstaller: PortableJDKInstalling {
+    func install(
+        majorVersion: Int,
+        architecture: String,
+        targetDirectory: URL
+    ) async throws {}
 }
 
 private final class ControlledDownloadService: DownloadServicing {

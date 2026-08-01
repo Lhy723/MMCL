@@ -61,6 +61,41 @@ final class LauncherServiceTests: XCTestCase {
         XCTAssertEqual(runtimes[1].architecture, .x86_64)
     }
 
+    func testJavaRuntimeServiceParsesLegacyJava8Formats() throws {
+        let javaVersionOutput = """
+        java version "1.8.0_401"
+        Java(TM) SE Runtime Environment (build 1.8.0_401-b10)
+        """
+        let openJDKVersionOutput = """
+        openjdk version "21.0.3+9-LTS"
+        OpenJDK Runtime Environment Temurin-21.0.3+9 (build 21.0.3+9-LTS)
+        """
+
+        let javaVersion = JavaRuntimeService.parseJavaVersionOutput(javaVersionOutput)
+        let openJDKVersion = JavaRuntimeService.parseJavaVersionOutput(openJDKVersionOutput)
+
+        XCTAssertEqual(javaVersion?.version, "1.8.0_401")
+        XCTAssertEqual(javaVersion?.majorVersion, 8)
+        XCTAssertEqual(openJDKVersion?.version, "21.0.3+9-LTS")
+        XCTAssertEqual(openJDKVersion?.majorVersion, 21)
+        XCTAssertEqual(JavaRuntimeService.parseMajorVersion(from: "1.8.0_382-b05"), 8)
+        XCTAssertEqual(JavaRuntimeService.parseMajorVersion(from: "9-ea"), 9)
+        XCTAssertEqual(JavaRuntimeService.parseMajorVersion(from: "17.0.11+9"), 17)
+
+        let javaHomeOutput = """
+        Matching Java Virtual Machines (2):
+            1.8.0_401 (x86_64) "Amazon.com Inc." - "Corretto-8" /Library/Java/JavaVirtualMachines/amazon-corretto-8.jdk/Contents/Home
+            21.0.3+9 (arm64) "Eclipse Adoptium" - "Temurin 21" /Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home
+        /Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home
+        """
+
+        let runtimes = JavaRuntimeService().parseJavaHomeVerboseOutput(javaHomeOutput)
+
+        XCTAssertEqual(runtimes.map(\.majorVersion), [8, 21])
+        XCTAssertEqual(runtimes[0].version, "1.8.0_401")
+        XCTAssertEqual(runtimes[0].architecture, .x86_64)
+    }
+
     func testPortableJDKInstallerRejectsTarFailureAndCleansIncompleteInstall() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -215,6 +250,28 @@ final class LauncherServiceTests: XCTestCase {
             .appendingPathComponent("jdk-21.0.0/bin/java")
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: installedJava.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: installedJava.path))
+    }
+
+    func testJavaRuntimeServiceRecognizesPortableJDKLayouts() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let directHome = root.appendingPathComponent("direct-layout", isDirectory: true)
+        let nestedContainer = root.appendingPathComponent("nested-layout", isDirectory: true)
+        let nestedHome = nestedContainer.appendingPathComponent("Contents/Home", isDirectory: true)
+
+        for home in [directHome, nestedHome] {
+            let javaURL = home.appendingPathComponent("bin/java")
+            try FileManager.default.createDirectory(
+                at: javaURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data("#!/bin/sh\n".utf8).write(to: javaURL)
+        }
+
+        XCTAssertEqual(JavaRuntimeService.portableJavaHome(in: directHome), directHome)
+        XCTAssertEqual(JavaRuntimeService.portableJavaHome(in: nestedContainer), nestedHome)
     }
 
     func testLaunchServiceBuildsMinecraftArgumentPreview() {

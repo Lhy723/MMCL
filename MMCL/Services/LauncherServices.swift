@@ -1030,6 +1030,45 @@ struct JavaRuntimeService: JavaRuntimeServicing {
             .compactMap { parseJavaHomeLine(String($0)) }
     }
 
+    static func parseJavaVersionOutput(_ output: String) -> (version: String, majorVersion: Int)? {
+        let pattern = #"(?m)^\s*(?:openjdk|java)\s+version\s+"([^"]+)""#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                in: output,
+                range: NSRange(output.startIndex..., in: output)
+              ),
+              let versionRange = Range(match.range(at: 1), in: output)
+        else {
+            return nil
+        }
+
+        let version = String(output[versionRange])
+        guard let majorVersion = parseMajorVersion(from: version) else { return nil }
+        return (version, majorVersion)
+    }
+
+    static func parseMajorVersion(from version: String) -> Int? {
+        let pattern = #"^\s*(\d+)(?:\.(\d+))?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                in: version,
+                range: NSRange(version.startIndex..., in: version)
+              ),
+              let majorRange = Range(match.range(at: 1), in: version),
+              let major = Int(version[majorRange])
+        else {
+            return nil
+        }
+
+        guard major == 1,
+              let legacyMajorRange = Range(match.range(at: 2), in: version),
+              let legacyMajor = Int(version[legacyMajorRange])
+        else {
+            return major
+        }
+        return legacyMajor
+    }
+
     func discoverInstalledRuntimes() async throws -> [JavaRuntime] {
         var runtimes = await discoverViaJavaHome()
         runtimes.append(contentsOf: discoverSDKMAN())
@@ -1043,6 +1082,17 @@ struct JavaRuntimeService: JavaRuntimeServicing {
             guard !seen.contains(key) else { return false }
             seen.insert(key)
             return true
+        }
+    }
+
+    static func portableJavaHome(in directory: URL) -> URL? {
+        let fileManager = FileManager.default
+        let candidates = [
+            directory,
+            directory.appendingPathComponent("Contents/Home", isDirectory: true)
+        ]
+        return candidates.first { home in
+            fileManager.fileExists(atPath: home.appendingPathComponent("bin/java").path)
         }
     }
 
@@ -1121,27 +1171,22 @@ struct JavaRuntimeService: JavaRuntimeServicing {
 
     private func discoverPortableJDKs() -> [JavaRuntime] {
         let dir = portableJDKDirectory
-        guard let contents = try? FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
-        ) else { return [] }
-        return contents.compactMap { item in
-            // Adoptium extracts to jdk-X.Y.Z+NN directory
-            let home: URL
-            if item.lastPathComponent.contains("jdk-") {
-                home = item
-            } else {
-                // Try Contents/Home for .app bundles
-                let appHome = item.appendingPathComponent("Contents/Home", isDirectory: true)
-                if FileManager.default.fileExists(atPath: appHome.appendingPathComponent("bin/java").path) {
-                    home = appHome
-                } else {
-                    home = item
-                }
-            }
-            let javaBin = home.appendingPathComponent("bin/java")
-            guard FileManager.default.fileExists(atPath: javaBin.path) else { return nil }
-            return parseJavaHome(home: home, name: "便携版 \(item.lastPathComponent)")
+        var portableHomes: [(home: URL, name: String)] = []
+
+        if let home = Self.portableJavaHome(in: dir) {
+            portableHomes.append((home, "便携版 \(dir.lastPathComponent)"))
         }
+
+        if let contents = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        ) {
+            for item in contents {
+                guard let home = Self.portableJavaHome(in: item) else { continue }
+                portableHomes.append((home, "便携版 \(item.lastPathComponent)"))
+            }
+        }
+
+        return portableHomes.compactMap { parseJavaHome(home: $0.home, name: $0.name) }
     }
 
     private func scanJavaDirectories(under directory: URL, source: String) -> [JavaRuntime] {
@@ -1167,21 +1212,14 @@ struct JavaRuntimeService: JavaRuntimeServicing {
         process.waitUntilExit()
         let data = errPipe.fileHandleForReading.readDataToEndOfFile()
         let output = String(decoding: data, as: UTF8.self)
-        let pattern = #"openjdk version "([0-9]+(?:\.[0-9]+)*)""#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),
-              let versionRange = Range(match.range(at: 1), in: output)
-        else { return nil }
-
-        let version = String(output[versionRange])
-        let majorVersion = Int(version.split(separator: ".").first ?? "") ?? 0
+        guard let parsedVersion = Self.parseJavaVersionOutput(output) else { return nil }
 
         let arch = RuntimeArchitecture.detect(from: javaBin)
 
         return JavaRuntime(
             name: name,
-            version: version,
-            majorVersion: majorVersion,
+            version: parsedVersion.version,
+            majorVersion: parsedVersion.majorVersion,
             architecture: arch,
             executableURL: javaBin
         )
@@ -1189,7 +1227,7 @@ struct JavaRuntimeService: JavaRuntimeServicing {
 
     private func parseJavaHomeLine(_ line: String) -> JavaRuntime? {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
-        let pattern = #"^([0-9]+(?:\.[0-9]+)*) \(([^)]+)\) ".+" - "(.+)" (/.+)$"#
+        let pattern = #"^(\S+)\s+\(([^)]+)\)\s+"[^"]*"\s+-\s+"([^"]*)"\s+(.+)$"#
         guard let regex = try? NSRegularExpression(pattern: pattern),
               let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
               match.numberOfRanges == 5,
@@ -1205,7 +1243,7 @@ struct JavaRuntimeService: JavaRuntimeServicing {
         let architecture = RuntimeArchitecture(rawValue: String(trimmed[architectureRange])) ?? .unknown
         let name = String(trimmed[nameRange])
         let homeURL = URL(fileURLWithPath: String(trimmed[homeRange]), isDirectory: true)
-        let majorVersion = Int(version.split(separator: ".").first ?? "") ?? 0
+        guard let majorVersion = Self.parseMajorVersion(from: version) else { return nil }
 
         return JavaRuntime(
             name: name,

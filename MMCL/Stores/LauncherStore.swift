@@ -1230,7 +1230,8 @@ extension LauncherStore {
         }
     }
 
-    func refreshJavaRuntimes() async {
+    @discardableResult
+    func refreshJavaRuntimes() async -> [JavaRuntime] {
         isScanningJava = true
         defer { isScanningJava = false }
         do {
@@ -1246,6 +1247,7 @@ extension LauncherStore {
                 ),
                 at: 0
             )
+            return runtimes
         } catch {
             javaRuntimes = []
             recalculateJavaSelectionForSelectedInstance()
@@ -1258,6 +1260,7 @@ extension LauncherStore {
                 ),
                 at: 0
             )
+            return []
         }
     }
 
@@ -1280,10 +1283,27 @@ extension LauncherStore {
                 targetDirectory: targetDir
             )
 
-            jdkInstallProgress = 1.0
+            jdkInstallProgress = 0.9
 
-            // Rescan
-            await refreshJavaRuntimes()
+            let runtimes = await refreshJavaRuntimes()
+            guard runtimes.contains(where: { runtime in
+                runtime.majorVersion == majorVersion
+                    && isRuntimeLocated(runtime, under: targetDir)
+            }) else {
+                jdkInstallProgress = 0
+                diagnostics.insert(
+                    DiagnosticReport(
+                        title: "Java 安装失败",
+                        severity: .error,
+                        summary: "JDK 已解压到 \(targetDir.path)，但重新扫描未发现 Java \(majorVersion)。",
+                        suggestedActions: ["重新扫描 Java", "检查便携版 JDK 目录中的 bin/java"]
+                    ),
+                    at: 0
+                )
+                return
+            }
+
+            jdkInstallProgress = 1.0
 
             diagnostics.insert(
                 DiagnosticReport(
@@ -1306,6 +1326,12 @@ extension LauncherStore {
                 at: 0
             )
         }
+    }
+
+    private func isRuntimeLocated(_ runtime: JavaRuntime, under directory: URL) -> Bool {
+        let directoryPath = directory.resolvingSymlinksInPath().standardizedFileURL.path
+        let runtimePath = runtime.executableURL.resolvingSymlinksInPath().standardizedFileURL.path
+        return runtimePath.hasPrefix(directoryPath + "/")
     }
 
     func removePortableJDK(at url: URL) {
