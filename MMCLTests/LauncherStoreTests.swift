@@ -855,6 +855,68 @@ final class LauncherStoreTests: XCTestCase {
         XCTAssertEqual(store.downloadJobs[2].status, .completed)
     }
 
+    @MainActor
+    func testCancellingQueuedDownloadRemovesItBeforeNextDownloadStarts() async throws {
+        let service = ControlledDownloadService()
+        let first = DownloadJob(title: "第一个", source: .official, destination: URL(fileURLWithPath: "/tmp/first"), totalBytes: 1)
+        let cancelled = DownloadJob(title: "取消项", source: .official, destination: URL(fileURLWithPath: "/tmp/cancelled"), totalBytes: 1)
+        let next = DownloadJob(title: "下一项", source: .official, destination: URL(fileURLWithPath: "/tmp/next"), totalBytes: 1)
+        let store = LauncherStore(
+            instances: [],
+            downloadJobs: [first, cancelled, next],
+            featuredProjects: [],
+            diagnostics: [],
+            javaRuntimes: [],
+            availableVersions: [],
+            downloadService: service
+        )
+        store.maxDownloadThreads = 1
+
+        await store.executeQueuedDownloads()
+        XCTAssertEqual(service.startedJobs.map(\.id), [first.id])
+
+        store.cancelJob(id: cancelled.id)
+        XCTAssertEqual(store.downloadJobs.first { $0.id == cancelled.id }?.status, .failed)
+
+        var completedFirst = first
+        completedFirst.status = .completed
+        completedFirst.completedBytes = completedFirst.totalBytes
+        service.onComplete?(first.id, completedFirst)
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        XCTAssertEqual(service.startedJobs.map(\.id), [first.id, next.id])
+        XCTAssertEqual(store.downloadJobs.first { $0.id == cancelled.id }?.status, .failed)
+        XCTAssertEqual(store.downloadJobs.first { $0.id == next.id }?.status, .running)
+    }
+
+    @MainActor
+    func testCancellingRunningDownloadReleasesSlotAfterCancellationCallback() async throws {
+        let service = ControlledDownloadService()
+        let running = DownloadJob(title: "正在下载", source: .official, destination: URL(fileURLWithPath: "/tmp/running"), totalBytes: 1)
+        let next = DownloadJob(title: "排队下一项", source: .official, destination: URL(fileURLWithPath: "/tmp/next"), totalBytes: 1)
+        let store = LauncherStore(
+            instances: [],
+            downloadJobs: [running, next],
+            featuredProjects: [],
+            diagnostics: [],
+            javaRuntimes: [],
+            availableVersions: [],
+            downloadService: service
+        )
+        store.maxDownloadThreads = 1
+
+        await store.executeQueuedDownloads()
+        store.cancelJob(id: running.id)
+        XCTAssertEqual(service.cancelledIDs, [running.id])
+
+        service.onCancelled?(running.id)
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        XCTAssertEqual(store.downloadJobs.first { $0.id == running.id }?.status, .failed)
+        XCTAssertEqual(store.downloadJobs.first { $0.id == next.id }?.status, .running)
+        XCTAssertEqual(service.startedJobs.map(\.id), [running.id, next.id])
+    }
+
     private static let versionMetadataJSON = """
     {
       "id": "1.21.5",
@@ -893,4 +955,68 @@ final class LauncherStoreTests: XCTestCase {
       ]
     }
     """
+}
+
+private final class ControlledDownloadService: DownloadServicing {
+    var onProgress: ((UUID, Int64) -> Void)?
+    var onComplete: ((UUID, DownloadJob) -> Void)?
+    var onError: ((UUID, Error) -> Void)?
+    var onCancelled: ((UUID) -> Void)?
+
+    private(set) var startedJobs: [DownloadJob] = []
+    private(set) var cancelledIDs: [UUID] = []
+
+    func makeVanillaClientJob(version: String, destination: URL) -> DownloadJob {
+        DownloadJob(title: version, source: .official, destination: destination, totalBytes: 1)
+    }
+
+    func writeVersionMetadata(metadata: VersionMetadata, instance: LauncherInstance) throws -> URL {
+        instance.rootDirectory.appendingPathComponent("\(metadata.id).json")
+    }
+
+    func makeVanillaInstallJobs(
+        metadata: VersionMetadata,
+        instance: LauncherInstance,
+        source: DownloadSource
+    ) -> [DownloadJob] {
+        []
+    }
+
+    func makeVanillaRepairJobs(
+        metadata: VersionMetadata,
+        instance: LauncherInstance,
+        source: DownloadSource
+    ) -> [DownloadJob] {
+        []
+    }
+
+    func makeAssetObjectJobs(
+        assetIndex: AssetIndex,
+        instance: LauncherInstance,
+        source: DownloadSource,
+        taskGroupID: UUID?,
+        taskGroupName: String?
+    ) -> [DownloadJob] {
+        []
+    }
+
+    func prepareNativeLibraries(metadata: VersionMetadata, instance: LauncherInstance) throws -> [URL] {
+        []
+    }
+
+    func validateLoaderInstallation(metadata: VersionMetadata, instance: LauncherInstance) throws {}
+
+    func startDownload(_ job: DownloadJob) {
+        startedJobs.append(job)
+    }
+
+    func pauseDownload(id: UUID) {}
+
+    func resumeDownload(id: UUID) {}
+
+    func cancelDownload(id: UUID) {
+        cancelledIDs.append(id)
+    }
+
+    func cancelAllDownloads() {}
 }

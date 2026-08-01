@@ -1700,14 +1700,8 @@ extension LauncherStore {
         downloadService.onComplete = { [weak self] jobID, completedJob in
             Task { @MainActor in
                 guard let self else { return }
-                if let index = self.downloadJobs.firstIndex(where: { $0.id == jobID }) {
-                    self.downloadJobs[index] = completedJob
-                }
-                self.speedTracker.addBytes(completedJob.totalBytes)
-                self.activeDownloadCount -= 1
-                self.startNextQueuedDownloadIfNeeded()
-                if self.activeDownloadCount <= 0 {
-                    self.finalizeDownloadedPlanIfPossible()
+                if self.transitionDownload(id: jobID, to: .completed, job: completedJob) {
+                    self.speedTracker.addBytes(completedJob.totalBytes)
                 }
             }
         }
@@ -1715,47 +1709,97 @@ extension LauncherStore {
         downloadService.onError = { [weak self] jobID, error in
             Task { @MainActor in
                 guard let self else { return }
-                if let index = self.downloadJobs.firstIndex(where: { $0.id == jobID }) {
-                    self.downloadJobs[index].status = .failed
-                }
-                self.diagnostics.insert(
-                    DiagnosticReport(
-                        title: "下载失败",
-                        severity: .error,
-                        summary: error.localizedDescription,
-                        suggestedActions: ["检查网络连接和下载源", "重新生成安装计划后重试"]
-                    ),
-                    at: 0
+                _ = self.transitionDownload(
+                    id: jobID,
+                    to: .failed,
+                    error: error
                 )
-                self.activeDownloadCount -= 1
-                self.startNextQueuedDownloadIfNeeded()
-                if self.activeDownloadCount <= 0 {
-                    self.finalizeDownloadedPlanIfPossible()
-                }
             }
         }
 
-        var started = 0
-        for id in queuedIDs {
-            if let index = downloadJobs.firstIndex(where: { $0.id == id }) {
-                downloadJobs[index].status = .running
-                downloadService.startDownload(downloadJobs[index])
-                started += 1
-                if started >= maxDownloadThreads { break }
+        downloadService.onCancelled = { [weak self] jobID in
+            Task { @MainActor in
+                guard let self else { return }
+                _ = self.transitionDownload(id: jobID, to: .failed)
             }
         }
-        activeDownloadCount = started
-        queuedDownloadIDs = Array(queuedIDs.dropFirst(started))
+
+        queuedDownloadIDs.removeAll { id in
+            guard let job = downloadJobs.first(where: { $0.id == id }) else {
+                return true
+            }
+            return job.status != .queued
+        }
+        for id in queuedIDs where !queuedDownloadIDs.contains(id) {
+            queuedDownloadIDs.append(id)
+        }
+        activeDownloadCount = downloadJobs.filter { $0.status == .running }.count
+        startNextQueuedDownloadIfNeeded()
+    }
+
+    @discardableResult
+    private func transitionDownload(
+        id: UUID,
+        to status: DownloadStatus,
+        job completedJob: DownloadJob? = nil,
+        error: Error? = nil,
+        scheduleNext: Bool = true,
+        finalizeIfIdle: Bool = true
+    ) -> Bool {
+        guard let index = downloadJobs.firstIndex(where: { $0.id == id }) else {
+            return false
+        }
+        let previousStatus = downloadJobs[index].status
+        guard previousStatus.isActive else { return false }
+
+        if var completedJob {
+            completedJob.status = status
+            downloadJobs[index] = completedJob
+        } else {
+            downloadJobs[index].status = status
+        }
+        queuedDownloadIDs.removeAll { $0 == id }
+
+        if previousStatus == .running {
+            activeDownloadCount = max(0, activeDownloadCount - 1)
+        }
+
+        if let error {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "下载失败",
+                    severity: .error,
+                    summary: error.localizedDescription,
+                    suggestedActions: ["检查网络连接和下载源", "重新生成安装计划后重试"]
+                ),
+                at: 0
+            )
+        }
+
+        if scheduleNext {
+            startNextQueuedDownloadIfNeeded()
+        }
+        if finalizeIfIdle,
+           activeDownloadCount == 0,
+           queuedDownloadIDs.isEmpty {
+            finalizeDownloadedPlanIfPossible()
+        }
+        return true
     }
 
     func startNextQueuedDownloadIfNeeded() {
-        guard !queuedDownloadIDs.isEmpty else { return }
-        guard activeDownloadCount < maxDownloadThreads else { return }
-        let nextID = queuedDownloadIDs.removeFirst()
-        if let index = downloadJobs.firstIndex(where: { $0.id == nextID }) {
+        guard maxDownloadThreads > 0 else { return }
+        while activeDownloadCount < maxDownloadThreads, !queuedDownloadIDs.isEmpty {
+            let nextID = queuedDownloadIDs.removeFirst()
+            guard let index = downloadJobs.firstIndex(where: { $0.id == nextID }) else {
+                continue
+            }
+            guard downloadJobs[index].status == .queued else {
+                continue
+            }
             downloadJobs[index].status = .running
-            downloadService.startDownload(downloadJobs[index])
             activeDownloadCount += 1
+            downloadService.startDownload(downloadJobs[index])
         }
     }
 
@@ -1784,10 +1828,16 @@ extension LauncherStore {
 
     func cancelDownloads() {
         downloadService.cancelAllDownloads()
-        for index in downloadJobs.indices {
-            if downloadJobs[index].status.isActive {
-                downloadJobs[index].status = .failed
-            }
+        let activeIDs = downloadJobs
+            .filter { $0.status.isActive }
+            .map(\.id)
+        for id in activeIDs {
+            _ = transitionDownload(
+                id: id,
+                to: .failed,
+                scheduleNext: false,
+                finalizeIfIdle: false
+            )
         }
         queuedDownloadIDs.removeAll()
         activeDownloadCount = 0
@@ -1820,9 +1870,14 @@ extension LauncherStore {
 
     func cancelJob(id: UUID) {
         guard let index = downloadJobs.firstIndex(where: { $0.id == id }) else { return }
-        if downloadJobs[index].status.isActive {
+        switch downloadJobs[index].status {
+        case .running:
             downloadService.cancelDownload(id: id)
-            downloadJobs[index].status = .failed
+        case .queued, .paused:
+            downloadService.cancelDownload(id: id)
+            _ = transitionDownload(id: id, to: .failed)
+        case .completed, .failed:
+            break
         }
     }
 

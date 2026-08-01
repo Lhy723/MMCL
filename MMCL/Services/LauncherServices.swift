@@ -242,6 +242,7 @@ protocol DownloadServicing: AnyObject {
     var onProgress: ((UUID, Int64) -> Void)? { get set }
     var onComplete: ((UUID, DownloadJob) -> Void)? { get set }
     var onError: ((UUID, Error) -> Void)? { get set }
+    var onCancelled: ((UUID) -> Void)? { get set }
 
     func makeVanillaClientJob(version: String, destination: URL) -> DownloadJob
     func writeVersionMetadata(metadata: VersionMetadata, instance: LauncherInstance) throws -> URL
@@ -275,6 +276,7 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
     var onProgress: ((UUID, Int64) -> Void)?
     var onComplete: ((UUID, DownloadJob) -> Void)?
     var onError: ((UUID, Error) -> Void)?
+    var onCancelled: ((UUID) -> Void)?
 
     private var session: URLSession!
     private let lock = NSLock()
@@ -370,6 +372,13 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
     func pauseDownload(id: UUID) {
         lock.lock()
         let task = activeTasks[id]
+        if let task {
+            activeTasks.removeValue(forKey: id)
+            if var job = jobsByID[id] {
+                job.status = .paused
+                jobsByID[id] = job
+            }
+        }
         lock.unlock()
         guard let task else { return }
         task.cancel { [weak self] data in
@@ -379,13 +388,6 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
                 self.lock.unlock()
             }
         }
-        lock.lock()
-        activeTasks.removeValue(forKey: id)
-        if var job = jobsByID[id] {
-            job.status = .paused
-            jobsByID[id] = job
-        }
-        lock.unlock()
     }
 
     func resumeDownload(id: UUID) {
@@ -405,12 +407,17 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
         let task = activeTasks[id]
         activeTasks.removeValue(forKey: id)
         resumeDataMap.removeValue(forKey: id)
+        var shouldNotifyWithoutTask = false
         if var job = jobsByID[id], job.status.isActive {
             job.status = .failed
             jobsByID[id] = job
+            shouldNotifyWithoutTask = task == nil
         }
         lock.unlock()
         task?.cancel()
+        if shouldNotifyWithoutTask {
+            onCancelled?(id)
+        }
     }
 
     func cancelAllDownloads() {
@@ -731,7 +738,11 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
 
         if let error {
             if (error as NSError).code == NSURLErrorCancelled {
+                let wasPaused = jobsByID[jobID]?.status == .paused
                 lock.unlock()
+                if !wasPaused {
+                    onCancelled?(jobID)
+                }
                 return
             }
             if var job = jobsByID[jobID] {
