@@ -1661,11 +1661,26 @@ extension LauncherStore {
             return
         }
 
+        guard let metadata = (plannedInstanceID == selectedInstance.id ? plannedVersionMetadata : nil)
+            ?? localVersionMetadata(for: selectedInstance)
+        else {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "缺少版本元数据",
+                    severity: .error,
+                    summary: "无法读取 \(selectedInstance.name) 的版本 metadata，无法确定 asset index 文件名。",
+                    suggestedActions: ["先生成安装计划", "确认版本 metadata 已下载"]
+                ),
+                at: 0
+            )
+            return
+        }
+
         let assetIndexURL = selectedInstance.rootDirectory
             .appendingPathComponent(".minecraft", isDirectory: true)
             .appendingPathComponent("assets", isDirectory: true)
             .appendingPathComponent("indexes", isDirectory: true)
-            .appendingPathComponent("\(selectedInstance.gameVersion).json")
+            .appendingPathComponent("\(metadata.assetIndex.id).json")
 
         do {
             try expandAssetIndexDownloads(assetIndexURL: assetIndexURL, for: selectedInstance)
