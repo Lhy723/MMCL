@@ -1,7 +1,9 @@
 import SwiftUI
+import AppKit
 
 @main
 struct MMCLApp: App {
+    @NSApplicationDelegateAdaptor(MMCLTestAwareAppDelegate.self) private var appDelegate
     @StateObject private var store = LauncherStore()
 
     var body: some Scene {
@@ -27,6 +29,25 @@ struct MMCLApp: App {
                     .tabItem { Label("帮助", systemImage: "questionmark.circle") }
             }
         }
+    }
+}
+
+private final class MMCLTestAwareAppDelegate: NSObject, NSApplicationDelegate {
+    private var isHeadlessUnitTestHost: Bool {
+        let isXCTestProcess = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        let isUITestLaunch = ProcessInfo.processInfo.arguments.contains("--mmcl-ui-testing")
+        return isXCTestProcess && !isUITestLaunch
+    }
+
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
+        !isHeadlessUnitTestHost
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        guard isHeadlessUnitTestHost else { return }
+
+        NSApp.setActivationPolicy(.prohibited)
+        NSApp.windows.forEach { $0.orderOut(nil) }
     }
 }
 
