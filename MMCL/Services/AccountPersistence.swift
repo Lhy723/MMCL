@@ -254,6 +254,7 @@ private struct PersistedMinecraftAccount: Codable {
     let id: UUID
     let username: String
     let uuid: String
+    let xuid: String
     let expiresAt: Date
     let type: MinecraftAccount.AccountType
     let appliedSkin: SkinInfo?
@@ -267,6 +268,7 @@ private struct PersistedMinecraftAccount: Codable {
         case id
         case username
         case uuid
+        case xuid
         case accessToken
         case refreshToken
         case expiresAt
@@ -278,6 +280,7 @@ private struct PersistedMinecraftAccount: Codable {
         id = account.id
         username = account.username
         uuid = account.uuid
+        xuid = account.xuid
         expiresAt = account.expiresAt
         type = account.type
         appliedSkin = account.appliedSkin
@@ -291,6 +294,7 @@ private struct PersistedMinecraftAccount: Codable {
         id = try container.decode(UUID.self, forKey: .id)
         username = try container.decode(String.self, forKey: .username)
         uuid = try container.decodeIfPresent(String.self, forKey: .uuid) ?? ""
+        xuid = try container.decodeIfPresent(String.self, forKey: .xuid) ?? ""
         accessToken = try container.decodeIfPresent(String.self, forKey: .accessToken)
         refreshToken = try container.decodeIfPresent(String.self, forKey: .refreshToken)
         expiresAt = try container.decodeIfPresent(Date.self, forKey: .expiresAt) ?? Date()
@@ -304,6 +308,7 @@ private struct PersistedMinecraftAccount: Codable {
         try container.encode(id, forKey: .id)
         try container.encode(username, forKey: .username)
         try container.encode(uuid, forKey: .uuid)
+        try container.encode(xuid, forKey: .xuid)
         try container.encode(expiresAt, forKey: .expiresAt)
         try container.encode(type, forKey: .type)
         try container.encodeIfPresent(appliedSkin, forKey: .appliedSkin)
@@ -314,6 +319,7 @@ private struct PersistedMinecraftAccount: Codable {
             id: id,
             username: username,
             uuid: uuid,
+            xuid: xuid,
             accessToken: accessToken ?? "",
             refreshToken: refreshToken ?? "",
             expiresAt: expiresAt,

@@ -161,6 +161,80 @@ final class LauncherServiceTests: XCTestCase {
         XCTAssertEqual(command.argument(after: "--assetIndex"), "19")
     }
 
+    func testLaunchServiceUsesSelectedMicrosoftAccountAndRedactsAccessToken() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let instance = LauncherInstance(
+            name: "正版生存",
+            gameVersion: "1.21.5",
+            loader: .vanilla,
+            rootDirectory: root,
+            profile: LaunchProfile(offlineUsername: "Steve", memoryMegabytes: 4096, jvmArguments: [], resolutionWidth: 854, resolutionHeight: 480),
+            status: .ready
+        )
+        let metadata = try VersionManifestService().decodeVersionMetadata(from: Data(Self.modernArgumentsMetadataJSON.utf8))
+        _ = try DownloadService().writeVersionMetadata(metadata: metadata, instance: instance)
+        let java = JavaRuntime(
+            name: "Temurin 21",
+            version: "21.0.3",
+            majorVersion: 21,
+            architecture: .arm64,
+            executableURL: URL(fileURLWithPath: "/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home/bin/java")
+        )
+        let account = MinecraftAccount(
+            username: "MicrosoftPlayer",
+            uuid: "minecraft-uuid",
+            xuid: "2533274991020393",
+            accessToken: "minecraft-access-token-secret",
+            refreshToken: "microsoft-refresh-token",
+            expiresAt: Date().addingTimeInterval(3600),
+            type: .microsoft
+        )
+
+        let command = LaunchService().previewCommand(for: instance, java: java, account: account)
+
+        XCTAssertEqual(command.argument(after: "--username"), "MicrosoftPlayer")
+        XCTAssertEqual(command.argument(after: "--uuid"), "minecraft-uuid")
+        XCTAssertEqual(command.argument(after: "--xuid"), "2533274991020393")
+        XCTAssertEqual(command.argument(after: "--accessToken"), "<redacted>")
+        XCTAssertEqual(command.argument(after: "--userType"), "msa")
+        XCTAssertFalse(command.contains(account.accessToken))
+    }
+
+    func testLaunchServiceRedactsMicrosoftAccessTokenFromLaunchSession() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let instance = LauncherInstance(
+            name: "正版生存",
+            gameVersion: "1.21.5",
+            loader: .vanilla,
+            rootDirectory: root,
+            profile: LaunchProfile(offlineUsername: "Steve", memoryMegabytes: 512, jvmArguments: [], resolutionWidth: 854, resolutionHeight: 480),
+            status: .ready
+        )
+        let java = JavaRuntime(
+            name: "Echo",
+            version: "1.0",
+            majorVersion: 21,
+            architecture: .universal,
+            executableURL: URL(fileURLWithPath: "/bin/echo")
+        )
+        let account = MinecraftAccount(
+            username: "MicrosoftPlayer",
+            uuid: "minecraft-uuid",
+            xuid: "2533274991020393",
+            accessToken: "minecraft-access-token-secret",
+            type: .microsoft
+        )
+
+        let session = try LaunchService().launch(instance: instance, java: java, account: account)
+
+        XCTAssertFalse(session.command.contains(account.accessToken))
+        XCTAssertEqual(session.command.argument(after: "--accessToken"), "<redacted>")
+    }
+
     func testLaunchServiceExpandsLegacyMinecraftArguments() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -379,6 +453,10 @@ final class LauncherServiceTests: XCTestCase {
           "${assets_index_name}",
           "--accessToken",
           "${auth_access_token}",
+          "--uuid",
+          "${auth_uuid}",
+          "--xuid",
+          "${auth_xuid}",
           "--userType",
           "${user_type}"
         ]
@@ -509,10 +587,11 @@ final class LauncherServiceTests: XCTestCase {
     }
 
     func testMinecraftAccountRoundTripsThroughJSON() throws {
-        let account = MinecraftAccount(username: "Test", uuid: "uuid-123", accessToken: "at", refreshToken: "rt", expiresAt: Date(timeIntervalSince1970: 1000), type: .microsoft)
+        let account = MinecraftAccount(username: "Test", uuid: "uuid-123", xuid: "xuid-123", accessToken: "at", refreshToken: "rt", expiresAt: Date(timeIntervalSince1970: 1000), type: .microsoft)
         let data = try JSONEncoder.mmcl.encode(account)
         let decoded = try JSONDecoder.mmcl.decode(MinecraftAccount.self, from: data)
         XCTAssertEqual(decoded.username, "Test")
+        XCTAssertEqual(decoded.xuid, "xuid-123")
         XCTAssertEqual(decoded.type, .microsoft)
     }
 }

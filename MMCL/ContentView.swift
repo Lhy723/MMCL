@@ -28,7 +28,7 @@ struct ContentView: View {
         .toolbar {
             ToolbarItemGroup {
                 Button {
-                    store.launchSelectedInstance()
+                    Task { await store.launchSelectedInstance() }
                 } label: {
                     Label("启动", systemImage: "play.fill")
                 }

@@ -1175,6 +1175,7 @@ struct MinecraftAccount: Codable, Equatable, Identifiable {
     var id: UUID
     var username: String
     var uuid: String
+    var xuid: String
     var accessToken: String
     var refreshToken: String
     var expiresAt: Date
@@ -1190,6 +1191,7 @@ struct MinecraftAccount: Codable, Equatable, Identifiable {
         case id
         case username
         case uuid
+        case xuid
         case accessToken
         case refreshToken
         case expiresAt
@@ -1204,10 +1206,11 @@ struct MinecraftAccount: Codable, Equatable, Identifiable {
         }
     }
 
-    init(id: UUID = UUID(), username: String, uuid: String = "", accessToken: String = "", refreshToken: String = "", expiresAt: Date = Date(), type: AccountType = .offline, appliedSkin: SkinInfo? = nil) {
+    init(id: UUID = UUID(), username: String, uuid: String = "", xuid: String = "", accessToken: String = "", refreshToken: String = "", expiresAt: Date = Date(), type: AccountType = .offline, appliedSkin: SkinInfo? = nil) {
         self.id = id
         self.username = username
         self.uuid = uuid
+        self.xuid = xuid
         self.accessToken = accessToken
         self.refreshToken = refreshToken
         self.expiresAt = expiresAt
@@ -1221,6 +1224,7 @@ struct MinecraftAccount: Codable, Equatable, Identifiable {
             id: try container.decode(UUID.self, forKey: .id),
             username: try container.decode(String.self, forKey: .username),
             uuid: try container.decodeIfPresent(String.self, forKey: .uuid) ?? "",
+            xuid: try container.decodeIfPresent(String.self, forKey: .xuid) ?? "",
             accessToken: try container.decodeIfPresent(String.self, forKey: .accessToken) ?? "",
             refreshToken: try container.decodeIfPresent(String.self, forKey: .refreshToken) ?? "",
             expiresAt: try container.decodeIfPresent(Date.self, forKey: .expiresAt) ?? Date(),
@@ -1234,6 +1238,7 @@ struct MinecraftAccount: Codable, Equatable, Identifiable {
         try container.encode(id, forKey: .id)
         try container.encode(username, forKey: .username)
         try container.encode(uuid, forKey: .uuid)
+        try container.encode(xuid, forKey: .xuid)
         try container.encode(expiresAt, forKey: .expiresAt)
         try container.encode(type, forKey: .type)
         try container.encodeIfPresent(appliedSkin, forKey: .appliedSkin)
@@ -1267,6 +1272,19 @@ struct MicrosoftTokenResponse: Codable {
         case refreshToken = "refresh_token"
         case expiresInSeconds = "expires_in"
     }
+
+    init(accessToken: String, refreshToken: String = "", expiresInSeconds: Int) {
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.expiresInSeconds = expiresInSeconds
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        accessToken = try container.decode(String.self, forKey: .accessToken)
+        refreshToken = try container.decodeIfPresent(String.self, forKey: .refreshToken) ?? ""
+        expiresInSeconds = try container.decodeIfPresent(Int.self, forKey: .expiresInSeconds) ?? 0
+    }
 }
 
 struct XboxTokenResponse: Codable {
@@ -1282,6 +1300,8 @@ struct XboxTokenResponse: Codable {
 struct XBLXSTSResponse: Codable {
     var token: String
     var expiresInSeconds: Int
+    var xuid: String = ""
+    var userHash: String = ""
 
     enum CodingKeys: String, CodingKey {
         case token

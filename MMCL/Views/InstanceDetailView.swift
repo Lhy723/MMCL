@@ -161,7 +161,7 @@ struct InstanceDetailView: View {
             // Primary actions
             HStack(spacing: 12) {
                 Button {
-                    store.launchSelectedInstance()
+                    Task { await store.launchSelectedInstance() }
                 } label: {
                     Label("启动游戏", systemImage: "play.fill")
                 }

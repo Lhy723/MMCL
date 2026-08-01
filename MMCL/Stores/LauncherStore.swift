@@ -286,14 +286,16 @@ final class LauncherStore: ObservableObject {
             deviceCodeMessage = "请在浏览器中打开 \(deviceCode.verificationUri)，输入代码：\(deviceCode.userCode)"
             let token = try await authService.pollForToken(deviceCode: deviceCode.deviceCode, interval: deviceCode.interval)
 
-            let xblToken = try await authService.exchangeForXBLToken(accessToken: token.accessToken)
-            let xstsToken = try await authService.exchangeForXSTSToken(xblToken: xblToken.token)
-            let mcToken = try await authService.exchangeForMinecraftToken(xstsToken: xstsToken.token)
-            let profile = try await authService.fetchMinecraftProfile(accessToken: mcToken.accessToken)
+            let authentication = try await authenticateMinecraftAccount(
+                microsoftAccessToken: token.accessToken
+            )
+            let mcToken = authentication.minecraftToken
+            let profile = authentication.profile
 
             var account = MinecraftAccount(
                 username: profile.name,
                 uuid: profile.id,
+                xuid: authentication.xuid,
                 accessToken: mcToken.accessToken,
                 refreshToken: token.refreshToken,
                 expiresAt: Date().addingTimeInterval(TimeInterval(mcToken.expiresInSeconds)),
@@ -334,6 +336,23 @@ final class LauncherStore: ObservableObject {
                 at: 0
             )
         }
+    }
+
+    private func authenticateMinecraftAccount(
+        microsoftAccessToken: String
+    ) async throws -> (
+        minecraftToken: MinecraftTokenResponse,
+        profile: MinecraftProfileResponse,
+        xuid: String
+    ) {
+        let xblToken = try await authService.exchangeForXBLToken(accessToken: microsoftAccessToken)
+        let xstsToken = try await authService.exchangeForXSTSToken(xblToken: xblToken.token)
+        let minecraftToken = try await authService.exchangeForMinecraftToken(
+            xstsToken: xstsToken.token,
+            userHash: xstsToken.userHash
+        )
+        let profile = try await authService.fetchMinecraftProfile(accessToken: minecraftToken.accessToken)
+        return (minecraftToken, profile, xstsToken.xuid)
     }
 
     func addOfflineAccount(username: String) {
@@ -742,15 +761,24 @@ extension LauncherStore {
     }
 
     func launchPreviewForSelectedInstance() -> LaunchPreview? {
-        guard let selectedInstance, let selectedJavaRuntime else { return nil }
+        guard let selectedInstance,
+              let selectedJavaRuntime,
+              let selectedAccount
+        else {
+            return nil
+        }
         return LaunchPreview(
             instance: selectedInstance,
             java: selectedJavaRuntime,
-            command: launchService.previewCommand(for: selectedInstance, java: selectedJavaRuntime)
+            command: launchService.previewCommand(
+                for: selectedInstance,
+                java: selectedJavaRuntime,
+                account: selectedAccount
+            )
         )
     }
 
-    func launchSelectedInstance() {
+    func launchSelectedInstance() async {
         guard let selectedInstance else {
             diagnostics.insert(
                 DiagnosticReport(
@@ -758,6 +786,19 @@ extension LauncherStore {
                     severity: .error,
                     summary: "需要先选择实例才能启动 Minecraft。",
                     suggestedActions: ["从侧边栏选择一个实例"]
+                ),
+                at: 0
+            )
+            return
+        }
+
+        guard let selectedAccount else {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "缺少 Minecraft 账号",
+                    severity: .error,
+                    summary: "没有可用于启动 \(selectedInstance.name) 的 Minecraft 账号。",
+                    suggestedActions: ["添加离线账号或登录 Microsoft 账号"]
                 ),
                 at: 0
             )
@@ -777,7 +818,27 @@ extension LauncherStore {
             return
         }
 
-        let preflightReport = launchService.preflight(instance: selectedInstance, java: selectedJavaRuntime)
+        let account: MinecraftAccount
+        do {
+            account = try await accountReadyForLaunch(selectedAccount)
+        } catch {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "账号验证失败",
+                    severity: .error,
+                    summary: error.localizedDescription,
+                    suggestedActions: ["重新登录 Microsoft 账号", "检查网络连接后重试"]
+                ),
+                at: 0
+            )
+            return
+        }
+
+        let preflightReport = launchService.preflight(
+            instance: selectedInstance,
+            java: selectedJavaRuntime,
+            account: account
+        )
         guard preflightReport.canLaunch else {
             updateInstanceStatus(selectedInstance.id, status: .missingFiles)
             diagnostics.insert(preflightReport.diagnostic(), at: 0)
@@ -792,7 +853,11 @@ extension LauncherStore {
         }
 
         do {
-            let session = try launchService.launch(instance: selectedInstance, java: selectedJavaRuntime)
+            let session = try launchService.launch(
+                instance: selectedInstance,
+                java: selectedJavaRuntime,
+                account: account
+            )
             currentLaunchSession = session
             monitorLaunchSession()
             diagnostics.insert(
@@ -815,6 +880,53 @@ extension LauncherStore {
                 at: 0
             )
         }
+    }
+
+    private func accountReadyForLaunch(_ account: MinecraftAccount) async throws -> MinecraftAccount {
+        guard account.type == .microsoft else { return account }
+
+        let refreshThreshold = Date().addingTimeInterval(60)
+        let needsRefresh = account.accessToken.isEmpty
+            || account.xuid.isEmpty
+            || account.expiresAt <= refreshThreshold
+        guard needsRefresh else { return account }
+
+        guard !account.refreshToken.isEmpty else {
+            throw AuthError.refreshTokenUnavailable
+        }
+
+        let microsoftToken = try await authService.refreshMicrosoftToken(
+            refreshToken: account.refreshToken
+        )
+        let authentication = try await authenticateMinecraftAccount(
+            microsoftAccessToken: microsoftToken.accessToken
+        )
+
+        var refreshedAccount = account
+        refreshedAccount.username = authentication.profile.name
+        refreshedAccount.uuid = authentication.profile.id
+        refreshedAccount.xuid = authentication.xuid.isEmpty ? account.xuid : authentication.xuid
+        refreshedAccount.accessToken = authentication.minecraftToken.accessToken
+        refreshedAccount.refreshToken = microsoftToken.refreshToken.isEmpty
+            ? account.refreshToken
+            : microsoftToken.refreshToken
+        refreshedAccount.expiresAt = Date().addingTimeInterval(
+            TimeInterval(authentication.minecraftToken.expiresInSeconds)
+        )
+
+        guard let index = accounts.firstIndex(where: { $0.id == account.id }) else {
+            return refreshedAccount
+        }
+
+        let previousAccounts = accounts
+        accounts[index] = refreshedAccount
+        do {
+            try persistAccounts()
+        } catch {
+            accounts = previousAccounts
+            throw error
+        }
+        return refreshedAccount
     }
 
     func inspectSelectedInstance() {
@@ -845,7 +957,25 @@ extension LauncherStore {
             return
         }
 
-        let report = launchService.preflight(instance: selectedInstance, java: selectedJavaRuntime)
+        guard let selectedAccount else {
+            updateInstanceStatus(selectedInstance.id, status: .missingFiles)
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "实例需要 Minecraft 账号",
+                    severity: .error,
+                    summary: "没有可用于检查启动环境的 Minecraft 账号。",
+                    suggestedActions: ["添加离线账号或登录 Microsoft 账号"]
+                ),
+                at: 0
+            )
+            return
+        }
+
+        let report = launchService.preflight(
+            instance: selectedInstance,
+            java: selectedJavaRuntime,
+            account: selectedAccount
+        )
         let title: String
         switch report.severity {
         case .info:

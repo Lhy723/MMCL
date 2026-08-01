@@ -33,6 +33,71 @@ final class SemanticVersionTests: XCTestCase {
     }
 }
 
+private struct StubAuthService: AuthServicing {
+    func startDeviceCodeFlow() async throws -> DeviceCodeResponse {
+        DeviceCodeResponse(
+            userCode: "CODE",
+            verificationUri: "https://example.com",
+            expiresIn: 900,
+            interval: 1,
+            deviceCode: "device-code"
+        )
+    }
+
+    func pollForToken(deviceCode: String, interval: Int) async throws -> MicrosoftTokenResponse {
+        MicrosoftTokenResponse(
+            accessToken: "microsoft-access-token",
+            refreshToken: "new-refresh-token",
+            expiresInSeconds: 3600
+        )
+    }
+
+    func exchangeForXBLToken(accessToken: String) async throws -> XboxTokenResponse {
+        XboxTokenResponse(token: "xbl-token", expiresInSeconds: 3600)
+    }
+
+    func exchangeForXSTSToken(xblToken: String) async throws -> XBLXSTSResponse {
+        XBLXSTSResponse(
+            token: "xsts-token",
+            expiresInSeconds: 3600,
+            xuid: "refreshed-xuid",
+            userHash: "user-hash"
+        )
+    }
+
+    func exchangeForMinecraftToken(xstsToken: String) async throws -> MinecraftTokenResponse {
+        MinecraftTokenResponse(accessToken: "new-minecraft-token", expiresInSeconds: 3600)
+    }
+
+    func fetchMinecraftProfile(accessToken: String) async throws -> MinecraftProfileResponse {
+        MinecraftProfileResponse(id: "refreshed-uuid", name: "RefreshedName")
+    }
+
+    func refreshMicrosoftToken(refreshToken: String) async throws -> MicrosoftTokenResponse {
+        MicrosoftTokenResponse(
+            accessToken: "refreshed-microsoft-access-token",
+            refreshToken: "new-refresh-token",
+            expiresInSeconds: 3600
+        )
+    }
+}
+
+private final class InMemoryCredentialStore: AccountCredentialStoring {
+    private var storedCredentials: [UUID: AccountCredentials] = [:]
+
+    func credentials(for accountID: UUID) throws -> AccountCredentials? {
+        storedCredentials[accountID]
+    }
+
+    func save(_ credentials: AccountCredentials, for accountID: UUID) throws {
+        storedCredentials[accountID] = credentials
+    }
+
+    func deleteCredentials(for accountID: UUID) throws {
+        storedCredentials.removeValue(forKey: accountID)
+    }
+}
+
 final class LauncherStoreTests: XCTestCase {
     @MainActor
     func testStoreBuildsLaunchPreviewForSelectedInstanceAndJava() {
@@ -61,6 +126,9 @@ final class LauncherStoreTests: XCTestCase {
             javaRuntimes: [runtime],
             availableVersions: []
         )
+        let offlineAccount = MinecraftAccount(username: "Steve", type: .offline)
+        store.accounts = [offlineAccount]
+        store.selectedAccountID = offlineAccount.id
         store.selectedSection = .launcher
         store.launcherSelectedInstanceID = instanceID
         store.selectedJavaRuntimeID = runtime.id
@@ -107,6 +175,9 @@ final class LauncherStoreTests: XCTestCase {
             availableVersions: [],
             javaRuntimeService: StubJavaRuntimeService(runtimes: [java17, java21])
         )
+        let offlineAccount = MinecraftAccount(username: "Steve", type: .offline)
+        store.accounts = [offlineAccount]
+        store.selectedAccountID = offlineAccount.id
         store.selectedSection = .launcher
         store.launcherSelectedInstanceID = instanceID
 
@@ -118,7 +189,7 @@ final class LauncherStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testStoreLaunchesSelectedInstanceAndRecordsSession() {
+    func testStoreLaunchesSelectedInstanceAndRecordsSession() async {
         let instanceID = UUID()
         let instance = LauncherInstance(
             id: instanceID,
@@ -150,15 +221,86 @@ final class LauncherStoreTests: XCTestCase {
             availableVersions: [],
             launchService: StubLaunchService(session: expectedSession)
         )
+        let offlineAccount = MinecraftAccount(username: "Steve", type: .offline)
+        store.accounts = [offlineAccount]
+        store.selectedAccountID = offlineAccount.id
         store.selectedSection = .launcher
         store.launcherSelectedInstanceID = instanceID
         store.selectedJavaRuntimeID = runtime.id
 
-        store.launchSelectedInstance()
+        await store.launchSelectedInstance()
 
         XCTAssertEqual(store.currentLaunchSession, expectedSession)
         XCTAssertEqual(store.diagnostics.first?.title, "Minecraft 已启动")
         XCTAssertTrue(store.diagnostics.first?.summary.contains("42") == true)
+    }
+
+    @MainActor
+    func testStoreRefreshesExpiredMicrosoftAccountBeforeLaunch() async throws {
+        let instanceID = UUID()
+        let instance = LauncherInstance(
+            id: instanceID,
+            name: "正版生存",
+            gameVersion: "1.21.5",
+            loader: .vanilla,
+            rootDirectory: URL(fileURLWithPath: "/Users/example/Instances/vanilla", isDirectory: true),
+            status: .ready
+        )
+        let runtime = JavaRuntime(
+            name: "Temurin 21",
+            version: "21.0.3",
+            majorVersion: 21,
+            architecture: .arm64,
+            executableURL: URL(fileURLWithPath: "/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home/bin/java")
+        )
+        let account = MinecraftAccount(
+            username: "OldName",
+            uuid: "old-uuid",
+            xuid: "old-xuid",
+            accessToken: "old-minecraft-token",
+            refreshToken: "refresh-token",
+            expiresAt: Date().addingTimeInterval(-1),
+            type: .microsoft
+        )
+        let launchService = StubLaunchService(
+            session: LaunchSession(
+                processIdentifier: 42,
+                command: [runtime.executableURL.path, "--userType", "msa"],
+                logFileURL: URL(fileURLWithPath: "/Users/example/Instances/vanilla/logs/latest.log")
+            )
+        )
+        let accountFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MMCL-refresh-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("accounts.json")
+        defer { try? FileManager.default.removeItem(at: accountFile.deletingLastPathComponent()) }
+        let store = LauncherStore(
+            instances: [instance],
+            downloadJobs: [],
+            featuredProjects: [],
+            diagnostics: [],
+            javaRuntimes: [runtime],
+            availableVersions: [],
+            launchService: launchService,
+            authService: StubAuthService(),
+            accountPersistence: AccountPersistence(
+                fileURL: accountFile,
+                credentialStore: InMemoryCredentialStore()
+            )
+        )
+        store.accounts = [account]
+        store.selectedAccountID = account.id
+        store.selectedSection = .launcher
+        store.launcherSelectedInstanceID = instanceID
+        store.selectedJavaRuntimeID = runtime.id
+
+        await store.launchSelectedInstance()
+
+        XCTAssertEqual(store.currentLaunchSession?.processIdentifier, 42)
+        XCTAssertEqual(launchService.lastPreflightAccount?.username, "RefreshedName")
+        XCTAssertEqual(launchService.lastLaunchAccount?.uuid, "refreshed-uuid")
+        XCTAssertEqual(launchService.lastLaunchAccount?.xuid, "refreshed-xuid")
+        XCTAssertEqual(store.accounts.first?.accessToken, "new-minecraft-token")
+        XCTAssertEqual(store.accounts.first?.refreshToken, "new-refresh-token")
     }
 
     @MainActor
@@ -179,7 +321,7 @@ final class LauncherStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testStoreBlocksLaunchWhenPreflightFails() {
+    func testStoreBlocksLaunchWhenPreflightFails() async {
         let instanceID = UUID()
         let instance = LauncherInstance(
             id: instanceID,
@@ -217,11 +359,14 @@ final class LauncherStoreTests: XCTestCase {
             availableVersions: [],
             launchService: failingLaunchService
         )
+        let offlineAccount = MinecraftAccount(username: "Steve", type: .offline)
+        store.accounts = [offlineAccount]
+        store.selectedAccountID = offlineAccount.id
         store.selectedSection = .launcher
         store.launcherSelectedInstanceID = instanceID
         store.selectedJavaRuntimeID = runtime.id
 
-        store.launchSelectedInstance()
+        await store.launchSelectedInstance()
 
         XCTAssertNil(store.currentLaunchSession)
         XCTAssertFalse(failingLaunchService.didLaunch)
@@ -393,6 +538,8 @@ final class LauncherStoreTests: XCTestCase {
         let session: LaunchSession
         let preflightReport: LaunchPreflightReport
         private(set) var didLaunch = false
+        private(set) var lastPreflightAccount: MinecraftAccount?
+        private(set) var lastLaunchAccount: MinecraftAccount?
 
         init(
             session: LaunchSession,
@@ -406,15 +553,17 @@ final class LauncherStoreTests: XCTestCase {
             self.preflightReport = preflightReport
         }
 
-        func previewCommand(for instance: LauncherInstance, java: JavaRuntime) -> [String] {
+        func previewCommand(for instance: LauncherInstance, java: JavaRuntime, account: MinecraftAccount) -> [String] {
             session.command
         }
 
-        func preflight(instance: LauncherInstance, java: JavaRuntime) -> LaunchPreflightReport {
-            preflightReport
+        func preflight(instance: LauncherInstance, java: JavaRuntime, account: MinecraftAccount) -> LaunchPreflightReport {
+            lastPreflightAccount = account
+            return preflightReport
         }
 
-        func launch(instance: LauncherInstance, java: JavaRuntime) throws -> LaunchSession {
+        func launch(instance: LauncherInstance, java: JavaRuntime, account: MinecraftAccount) throws -> LaunchSession {
+            lastLaunchAccount = account
             didLaunch = true
             return session
         }

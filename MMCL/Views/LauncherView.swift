@@ -214,7 +214,7 @@ struct LauncherView: View {
 
     private var launchButton: some View {
         Button {
-            store.launchSelectedInstance()
+            Task { await store.launchSelectedInstance() }
         } label: {
             Label("启动游戏", systemImage: "play.fill")
                 .font(.title3.weight(.semibold))

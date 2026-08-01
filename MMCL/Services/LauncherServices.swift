@@ -1025,13 +1025,52 @@ struct JavaRuntimeService: JavaRuntimeServicing {
 }
 
 protocol LaunchServicing {
-    func previewCommand(for instance: LauncherInstance, java: JavaRuntime) -> [String]
-    func preflight(instance: LauncherInstance, java: JavaRuntime) -> LaunchPreflightReport
-    func launch(instance: LauncherInstance, java: JavaRuntime) throws -> LaunchSession
+    func previewCommand(for instance: LauncherInstance, java: JavaRuntime, account: MinecraftAccount) -> [String]
+    func preflight(instance: LauncherInstance, java: JavaRuntime, account: MinecraftAccount) -> LaunchPreflightReport
+    func launch(instance: LauncherInstance, java: JavaRuntime, account: MinecraftAccount) throws -> LaunchSession
 }
 
 struct LaunchService: LaunchServicing {
+    // Keep the original convenience overloads for callers that have not
+    // introduced account selection yet. They intentionally use the existing
+    // offline behavior; the LaunchServicing protocol itself requires an
+    // explicit account.
     func previewCommand(for instance: LauncherInstance, java: JavaRuntime) -> [String] {
+        previewCommand(
+            for: instance,
+            java: java,
+            account: MinecraftAccount(username: instance.profile.offlineUsername, type: .offline)
+        )
+    }
+
+    func preflight(instance: LauncherInstance, java: JavaRuntime) -> LaunchPreflightReport {
+        preflight(
+            instance: instance,
+            java: java,
+            account: MinecraftAccount(username: instance.profile.offlineUsername, type: .offline)
+        )
+    }
+
+    func launch(instance: LauncherInstance, java: JavaRuntime) throws -> LaunchSession {
+        try launch(
+            instance: instance,
+            java: java,
+            account: MinecraftAccount(username: instance.profile.offlineUsername, type: .offline)
+        )
+    }
+
+    func previewCommand(for instance: LauncherInstance, java: JavaRuntime, account: MinecraftAccount) -> [String] {
+        redactedCommand(
+            buildCommand(for: instance, java: java, account: account),
+            account: account
+        )
+    }
+
+    private func buildCommand(
+        for instance: LauncherInstance,
+        java: JavaRuntime,
+        account: MinecraftAccount
+    ) -> [String] {
         let minecraftDirectory = instance.rootDirectory.appendingPathComponent(".minecraft", isDirectory: true)
         let versionDirectory = minecraftDirectory
             .appendingPathComponent("versions", isDirectory: true)
@@ -1052,7 +1091,8 @@ struct LaunchService: LaunchServicing {
             minecraftDirectory: minecraftDirectory,
             nativesDirectory: nativesDirectory,
             classpath: classpath,
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            account: account
         )
 
         if let metadata, let arguments = metadata.arguments {
@@ -1103,7 +1143,7 @@ struct LaunchService: LaunchServicing {
             classpath,
             mainClass,
             "--username",
-            instance.profile.offlineUsername,
+            substitutions["auth_player_name"] ?? instance.profile.offlineUsername,
             "--version",
             instance.gameVersion,
             "--gameDir",
@@ -1113,13 +1153,17 @@ struct LaunchService: LaunchServicing {
             "--assetIndex",
             assetIndex,
             "--accessToken",
-            "0",
+            substitutions["auth_access_token"] ?? "0",
             "--userType",
-            "legacy"
+            substitutions["user_type"] ?? "legacy"
         ]
     }
 
-    func preflight(instance: LauncherInstance, java: JavaRuntime) -> LaunchPreflightReport {
+    func preflight(
+        instance: LauncherInstance,
+        java: JavaRuntime,
+        account: MinecraftAccount
+    ) -> LaunchPreflightReport {
         let fileManager = FileManager.default
         let minecraftDirectory = instance.rootDirectory.appendingPathComponent(".minecraft", isDirectory: true)
         let versionDirectory = minecraftDirectory
@@ -1129,6 +1173,24 @@ struct LaunchService: LaunchServicing {
         var blockingIssues: [String] = []
         var warnings: [String] = []
         var actions: [String] = []
+
+        if account.type == .microsoft {
+            if account.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                blockingIssues.append("Microsoft 账号缺少 Minecraft 用户名。")
+            }
+            if account.uuid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                blockingIssues.append("Microsoft 账号缺少 Minecraft UUID。")
+            }
+            if account.accessToken.isEmpty {
+                blockingIssues.append("Microsoft 账号缺少 Minecraft Access Token。")
+            }
+            if account.xuid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                blockingIssues.append("Microsoft 账号缺少 XUID，请重新登录 Microsoft 账号。")
+            }
+            if !blockingIssues.isEmpty {
+                actions.append("重新登录 Microsoft 账号")
+            }
+        }
 
         guard let metadata = localVersionMetadata(for: instance) else {
             blockingIssues.append("缺少 version JSON：\(metadataURL.path)")
@@ -1238,19 +1300,21 @@ struct LaunchService: LaunchServicing {
         minecraftDirectory: URL,
         nativesDirectory: URL,
         classpath: String,
-        assetIndex: String
+        assetIndex: String,
+        account: MinecraftAccount
     ) -> [String: String] {
-        [
-            "auth_player_name": instance.profile.offlineUsername,
+        let isMicrosoftAccount = account.type == .microsoft
+        return [
+            "auth_player_name": isMicrosoftAccount ? account.username : instance.profile.offlineUsername,
             "version_name": instance.gameVersion,
             "game_directory": minecraftDirectory.path,
             "assets_root": minecraftDirectory.appendingPathComponent("assets", isDirectory: true).path,
             "assets_index_name": assetIndex,
-            "auth_uuid": "00000000000000000000000000000000",
-            "auth_access_token": "0",
+            "auth_uuid": isMicrosoftAccount ? account.uuid : "00000000000000000000000000000000",
+            "auth_access_token": isMicrosoftAccount ? account.accessToken : "0",
             "clientid": "",
-            "auth_xuid": "",
-            "user_type": "legacy",
+            "auth_xuid": isMicrosoftAccount ? account.xuid : "",
+            "user_type": isMicrosoftAccount ? "msa" : "legacy",
             "version_type": "release",
             "natives_directory": nativesDirectory.path,
             "launcher_name": "MMCL",
@@ -1259,6 +1323,16 @@ struct LaunchService: LaunchServicing {
             "resolution_width": String(instance.profile.resolutionWidth),
             "resolution_height": String(instance.profile.resolutionHeight)
         ]
+    }
+
+    private func redactedCommand(_ command: [String], account: MinecraftAccount) -> [String] {
+        guard account.type == .microsoft, !account.accessToken.isEmpty else {
+            return command
+        }
+
+        return command.map { argument in
+            argument.replacingOccurrences(of: account.accessToken, with: "<redacted>")
+        }
     }
 
     private func replacePlaceholders(in value: String, substitutions: [String: String]) -> String {
@@ -1290,8 +1364,12 @@ struct LaunchService: LaunchServicing {
         return libraryJars + [clientJar]
     }
 
-    func launch(instance: LauncherInstance, java: JavaRuntime) throws -> LaunchSession {
-        let command = previewCommand(for: instance, java: java)
+    func launch(
+        instance: LauncherInstance,
+        java: JavaRuntime,
+        account: MinecraftAccount
+    ) throws -> LaunchSession {
+        let command = buildCommand(for: instance, java: java, account: account)
         guard let executable = command.first else {
             throw LaunchExecutionError.emptyCommand
         }
@@ -1322,7 +1400,7 @@ struct LaunchService: LaunchServicing {
 
         return LaunchSession(
             processIdentifier: process.processIdentifier,
-            command: command,
+            command: redactedCommand(command, account: account),
             logFileURL: logFileURL
         )
     }
@@ -1802,8 +1880,20 @@ protocol AuthServicing {
     func exchangeForXBLToken(accessToken: String) async throws -> XboxTokenResponse
     func exchangeForXSTSToken(xblToken: String) async throws -> XBLXSTSResponse
     func exchangeForMinecraftToken(xstsToken: String) async throws -> MinecraftTokenResponse
+    func exchangeForMinecraftToken(xstsToken: String, userHash: String) async throws -> MinecraftTokenResponse
     func fetchMinecraftProfile(accessToken: String) async throws -> MinecraftProfileResponse
     func refreshMicrosoftToken(refreshToken: String) async throws -> MicrosoftTokenResponse
+}
+
+extension AuthServicing {
+    func exchangeForMinecraftToken(
+        xstsToken: String,
+        userHash: String
+    ) async throws -> MinecraftTokenResponse {
+        // Keep existing test doubles and integrations source-compatible while
+        // allowing the real service to send the complete XBL3.0 identity.
+        try await exchangeForMinecraftToken(xstsToken: xstsToken)
+    }
 }
 
 struct AuthService: AuthServicing {
@@ -1858,13 +1948,14 @@ struct AuthService: AuthServicing {
             "Properties": [
                 "AuthMethod": "RPS",
                 "SiteName": "user.auth.xboxlive.com",
-                "RpsTicket": accessToken
+                "RpsTicket": "d=\(accessToken)"
             ],
             "RelyingParty": "http://auth.xboxlive.com",
             "TokenType": "JWT"
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("1", forHTTPHeaderField: "x-xbl-contract-version")
         let (data, _) = try await URLSession.shared.data(for: request)
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         let token = json["Token"] as! String
@@ -1879,27 +1970,76 @@ struct AuthService: AuthServicing {
         let body: [String: Any] = [
             "Properties": [
                 "SandboxId": "RETAIL",
-                "UserTokens": [xblToken]
+                "UserTokens": [xblToken],
+                // Request the user hash and XUID-related claims used by
+                // Minecraft's modern launch arguments (auth_xuid).
+                "OptionalDisplayClaims": ["xid", "mgt", "mgs", "umg"]
             ],
             "RelyingParty": "rp://api.minecraftservices.com/",
             "TokenType": "JWT"
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("1", forHTTPHeaderField: "x-xbl-contract-version")
         let (data, _) = try await URLSession.shared.data(for: request)
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         if let token = json["Token"] as? String {
-            return XBLXSTSResponse(token: token, expiresInSeconds: 3600)
+            return XBLXSTSResponse(
+                token: token,
+                expiresInSeconds: 3600,
+                xuid: xuid(from: json),
+                userHash: userHash(from: json)
+            )
         }
         let error = json["XErr"] as? Int ?? 0
         throw AuthError.xstsAuthFailed(error)
     }
 
+    private func xuid(from response: [String: Any]) -> String {
+        guard let displayClaims = response["DisplayClaims"] as? [String: Any],
+              let users = displayClaims["xui"] as? [[String: Any]],
+              let firstUser = users.first
+        else {
+            return ""
+        }
+
+        if let xuid = firstUser["xid"] as? String {
+            return xuid
+        }
+        if let xuid = firstUser["xid"] as? NSNumber {
+            return xuid.stringValue
+        }
+        return ""
+    }
+
+    private func userHash(from response: [String: Any]) -> String {
+        guard let displayClaims = response["DisplayClaims"] as? [String: Any],
+              let users = displayClaims["xui"] as? [[String: Any]],
+              let userHash = users.first?["uhs"] as? String
+        else {
+            return ""
+        }
+        return userHash
+    }
+
     func exchangeForMinecraftToken(xstsToken: String) async throws -> MinecraftTokenResponse {
+        try await exchangeForMinecraftToken(xstsToken: xstsToken, userHash: "")
+    }
+
+    func exchangeForMinecraftToken(
+        xstsToken: String,
+        userHash: String
+    ) async throws -> MinecraftTokenResponse {
         let url = URL(string: "https://api.minecraftservices.com/authentication/login_with_xbox")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        let body = ["identityToken": "XBL3.0 x=\(xstsToken)"]
+        let identityToken: String
+        if userHash.isEmpty {
+            identityToken = "XBL3.0 x=\(xstsToken)"
+        } else {
+            identityToken = "XBL3.0 x=\(userHash);\(xstsToken)"
+        }
+        let body = ["identityToken": identityToken]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let (data, _) = try await URLSession.shared.data(for: request)
@@ -2140,6 +2280,7 @@ enum AuthError: LocalizedError, Equatable {
     case tokenExchangeFailed(String)
     case xstsAuthFailed(Int)
     case noMinecraftProfile
+    case refreshTokenUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -2148,6 +2289,7 @@ enum AuthError: LocalizedError, Equatable {
         case .tokenExchangeFailed(let desc): return "令牌交换失败：\(desc)"
         case .xstsAuthFailed(let code): return "XSTS 认证失败（错误码 \(code)）。"
         case .noMinecraftProfile: return "此账号没有 Minecraft Profile。请确认已购买游戏。"
+        case .refreshTokenUnavailable: return "Microsoft 账号令牌已过期，且没有可用的 Refresh Token。请重新登录。"
         }
     }
 }
