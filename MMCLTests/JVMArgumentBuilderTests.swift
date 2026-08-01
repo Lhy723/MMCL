@@ -53,6 +53,65 @@ final class JVMArgumentBuilderTests: XCTestCase {
         XCTAssertEqual(arguments.last, "-Dfile.encoding=GBK")
     }
 
+    func testRepeatableTwoTokenModuleOptionsKeepEveryMetadataPair() {
+        let versionArguments = [
+            "--add-opens", "java.base/java.lang=ALL-UNNAMED",
+            "--add-opens", "java.base/java.util=ALL-UNNAMED",
+            "--add-exports", "java.base/sun.nio.ch=ALL-UNNAMED",
+            "--module-path", "/metadata/modules",
+            "--patch-module", "java.base=/metadata/patch.jar"
+        ]
+        let userArguments = [
+            "--add-opens", "java.base/java.io=ALL-UNNAMED",
+            "--add-exports", "java.base/sun.net=ALL-UNNAMED",
+            "--module-path", "/user/modules",
+            "--patch-module", "java.base=/user/patch.jar"
+        ]
+
+        let arguments = builder.build(
+            JVMArgumentBuildContext(
+                javaMajorVersion: 21,
+                javaArchitecture: .arm64,
+                memoryMegabytes: 4096,
+                nativeDirectory: URL(fileURLWithPath: "/tmp/natives"),
+                gameDirectory: URL(fileURLWithPath: "/tmp/.minecraft"),
+                versionArguments: versionArguments,
+                userArguments: userArguments,
+                useGeneratedArguments: false,
+                useOptimizingArguments: false
+            )
+        )
+
+        XCTAssertEqual(Array(arguments.prefix(versionArguments.count)), versionArguments)
+        XCTAssertEqual(Array(arguments.suffix(userArguments.count)), userArguments)
+        XCTAssertEqual(arguments.filter { $0 == "--add-opens" }.count, 3)
+        XCTAssertEqual(arguments.filter { $0 == "--add-exports" }.count, 2)
+        XCTAssertEqual(arguments.filter { $0 == "--module-path" }.count, 2)
+        XCTAssertEqual(arguments.filter { $0 == "--patch-module" }.count, 2)
+    }
+
+    func testClassPathUserOverrideRemovesMetadataOptionAndItsValue() {
+        let arguments = builder.build(
+            JVMArgumentBuildContext(
+                javaMajorVersion: 21,
+                javaArchitecture: .arm64,
+                memoryMegabytes: 4096,
+                nativeDirectory: URL(fileURLWithPath: "/tmp/natives"),
+                gameDirectory: URL(fileURLWithPath: "/tmp/.minecraft"),
+                versionArguments: ["--class-path", "/metadata/classpath", "-Xmx2048m"],
+                userArguments: ["--class-path", "/user/classpath", "-Xmx8192m"],
+                useGeneratedArguments: false,
+                useOptimizingArguments: false
+            )
+        )
+
+        XCTAssertFalse(arguments.contains("/metadata/classpath"))
+        XCTAssertFalse(arguments.contains("-Xmx2048m"))
+        XCTAssertTrue(arguments.contains("--class-path"))
+        XCTAssertTrue(arguments.contains("/user/classpath"))
+        XCTAssertTrue(arguments.contains("-Xmx8192m"))
+    }
+
     func testArgumentFileParticipatesInDefaultConflictDetection() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

@@ -53,6 +53,46 @@ struct JVMArgumentBuildContext {
 /// metadata and launcher defaults are conservative, while explicit user
 /// arguments are never replaced by generated values.
 struct JVMArgumentBuilder {
+    private struct OptionDefinition {
+        let arity: Int
+        let allowsUserOverride: Bool
+    }
+
+    /// Options in version metadata that consume a separate value token.
+    ///
+    /// Most JVM options are self-contained (`-Xmx4096m`, `-Dkey=value`,
+    /// `-XX:Flag=value`) and can safely be replaced by a user option with the
+    /// same key. Module-system options are different: they are commonly
+    /// repeated and are represented as two tokens. Removing only the flag
+    /// would leave its value behind and corrupt the final JVM command.
+    private static let optionDefinitions: [String: OptionDefinition] = [
+        // Class path is intentionally replaceable, but its metadata value
+        // must be removed together with the option.
+        "-cp": OptionDefinition(arity: 2, allowsUserOverride: true),
+        "-classpath": OptionDefinition(arity: 2, allowsUserOverride: true),
+
+        // Repeatable module-system options: retain every metadata entry even
+        // when a user supplies the same option.
+        "-p": OptionDefinition(arity: 2, allowsUserOverride: false),
+        "--module-path": OptionDefinition(arity: 2, allowsUserOverride: false),
+        "--upgrade-module-path": OptionDefinition(arity: 2, allowsUserOverride: false),
+        "--add-modules": OptionDefinition(arity: 2, allowsUserOverride: false),
+        "--add-reads": OptionDefinition(arity: 2, allowsUserOverride: false),
+        "--add-exports": OptionDefinition(arity: 2, allowsUserOverride: false),
+        "--add-opens": OptionDefinition(arity: 2, allowsUserOverride: false),
+        "--limit-modules": OptionDefinition(arity: 2, allowsUserOverride: false),
+        "--patch-module": OptionDefinition(arity: 2, allowsUserOverride: false),
+        "--enable-native-access": OptionDefinition(arity: 2, allowsUserOverride: false),
+
+        // These are normally launch-mode options rather than Minecraft
+        // metadata, but keeping their arity explicit prevents the same class
+        // of orphan-value bug if a loader emits them.
+        "-m": OptionDefinition(arity: 2, allowsUserOverride: false),
+        "--module": OptionDefinition(arity: 2, allowsUserOverride: false),
+        "-jar": OptionDefinition(arity: 2, allowsUserOverride: false),
+        "--source": OptionDefinition(arity: 2, allowsUserOverride: false)
+    ]
+
     func build(_ context: JVMArgumentBuildContext) -> [String] {
         let versionArguments = context.versionArguments
         let userArguments = context.userArguments
@@ -206,7 +246,13 @@ struct JVMArgumentBuilder {
     ) -> [String] {
         let userKeys = Set(
             expandedArguments(forConflictDetection: userArguments)
-                .compactMap { optionKey(for: $0) }
+                .compactMap { argument -> String? in
+                    guard let definition = optionDefinition(for: argument),
+                          definition.allowsUserOverride else {
+                        return nil
+                    }
+                    return definition.key
+                }
         )
         guard !userKeys.isEmpty else { return versionArguments }
 
@@ -214,14 +260,18 @@ struct JVMArgumentBuilder {
         var index = 0
         while index < versionArguments.count {
             let argument = versionArguments[index]
-            guard let key = optionKey(for: argument), userKeys.contains(key) else {
+            guard let definition = optionDefinition(for: argument),
+                  definition.allowsUserOverride,
+                  userKeys.contains(definition.key) else {
                 result.append(argument)
                 index += 1
                 continue
             }
 
-            // -cp/--class-path consumes the following classpath token.
-            index += key == "-cp" ? 2 : 1
+            // Skip the complete option/value pair for known two-token
+            // options. The bounds check also handles malformed metadata
+            // without skipping a later unrelated argument.
+            index += min(definition.arity, versionArguments.count - index)
         }
         return result
     }
@@ -255,9 +305,24 @@ struct JVMArgumentBuilder {
         if argument.hasPrefix("-Xms") { return "-Xms" }
         if argument.hasPrefix("-Xmn") { return "-Xmn" }
         if argument.hasPrefix("-Xss") { return "-Xss" }
-        if argument == "-cp" || argument == "--class-path" { return "-cp" }
+        if argument == "-cp" || argument.hasPrefix("-cp=") ||
+            argument == "--class-path" || argument.hasPrefix("--class-path=") {
+            return "-cp"
+        }
 
         return String(argument.split(separator: "=", maxSplits: 1).first ?? Substring(argument))
+    }
+
+    private func optionDefinition(for argument: String) -> (key: String, arity: Int, allowsUserOverride: Bool)? {
+        guard let key = optionKey(for: argument) else { return nil }
+        guard let definition = Self.optionDefinitions[key] else {
+            return (key: key, arity: 1, allowsUserOverride: true)
+        }
+
+        // `--option=value` is already a complete token even when the
+        // space-separated spelling of the same option consumes two tokens.
+        let arity = definition.arity > 1 && !argument.contains("=") ? definition.arity : 1
+        return (key: key, arity: arity, allowsUserOverride: definition.allowsUserOverride)
     }
 
     private func selectedGarbageCollector(in arguments: [String]) -> String? {
