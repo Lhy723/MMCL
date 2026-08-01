@@ -61,6 +61,162 @@ final class LauncherServiceTests: XCTestCase {
         XCTAssertEqual(runtimes[1].architecture, .x86_64)
     }
 
+    func testPortableJDKInstallerRejectsTarFailureAndCleansIncompleteInstall() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let archiveURL = root.appendingPathComponent("broken.tar.gz")
+        try Data("not a tar archive".utf8).write(to: archiveURL)
+        let targetDirectory = root.appendingPathComponent("JDK", isDirectory: true)
+
+        let installer = PortableJDKInstaller(downloader: { url in
+            (
+                archiveURL,
+                HTTPURLResponse(
+                    url: url,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+            )
+        })
+
+        do {
+            try await installer.install(
+                majorVersion: 21,
+                architecture: "aarch64",
+                targetDirectory: targetDirectory
+            )
+            XCTFail("损坏的 JDK 压缩包不应报告安装成功")
+        } catch let error as PortableJDKInstallError {
+            guard case .tarFailed(_, let stderr) = error else {
+                return XCTFail("预期 tarFailed，实际为 \(error)")
+            }
+            XCTAssertFalse(stderr.isEmpty)
+        }
+
+        let remainingFiles = try? FileManager.default.contentsOfDirectory(
+            at: targetDirectory,
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertTrue(remainingFiles?.isEmpty ?? true)
+    }
+
+    func testPortableJDKInstallerRejectsHTTPErrorBeforeCreatingInstallDirectory() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let targetDirectory = root.appendingPathComponent("JDK", isDirectory: true)
+        let installer = PortableJDKInstaller(downloader: { url in
+            (
+                root.appendingPathComponent("unused.tar.gz"),
+                HTTPURLResponse(
+                    url: url,
+                    statusCode: 404,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+            )
+        })
+
+        do {
+            try await installer.install(
+                majorVersion: 21,
+                architecture: "aarch64",
+                targetDirectory: targetDirectory
+            )
+            XCTFail("HTTP 404 不应报告安装成功")
+        } catch let error as PortableJDKInstallError {
+            XCTAssertEqual(error, .httpStatus(404))
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: targetDirectory.path))
+    }
+
+    func testPortableJDKInstallerRejectsArchiveWithoutExecutableJava() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceDirectory = root.appendingPathComponent("source", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+        try Data("not a java runtime".utf8).write(to: sourceDirectory.appendingPathComponent("README"))
+        let archiveURL = root.appendingPathComponent("jdk.tar.gz")
+        try Self.makeTarArchive(contentsOf: sourceDirectory, at: archiveURL)
+        let targetDirectory = root.appendingPathComponent("JDK", isDirectory: true)
+        let installer = PortableJDKInstaller(downloader: { url in
+            (
+                archiveURL,
+                HTTPURLResponse(
+                    url: url,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+            )
+        })
+
+        do {
+            try await installer.install(
+                majorVersion: 21,
+                architecture: "aarch64",
+                targetDirectory: targetDirectory
+            )
+            XCTFail("缺少 bin/java 不应报告安装成功")
+        } catch let error as PortableJDKInstallError {
+            guard case .missingJavaExecutable = error else {
+                return XCTFail("预期 missingJavaExecutable，实际为 \(error)")
+            }
+        }
+
+        let remainingFiles = try? FileManager.default.contentsOfDirectory(
+            at: targetDirectory,
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertTrue(remainingFiles?.isEmpty ?? true)
+    }
+
+    func testPortableJDKInstallerMovesValidatedJDKIntoTargetDirectory() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceDirectory = root
+            .appendingPathComponent("jdk-21.0.0", isDirectory: true)
+            .appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+        let javaURL = sourceDirectory.appendingPathComponent("java")
+        try Data("#!/bin/sh\n".utf8).write(to: javaURL)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: javaURL.path
+        )
+        let archiveURL = root.appendingPathComponent("jdk.tar.gz")
+        try Self.makeTarArchive(contentsOf: sourceDirectory.deletingLastPathComponent().deletingLastPathComponent(), at: archiveURL)
+        let targetDirectory = root.appendingPathComponent("JDK", isDirectory: true)
+        let installer = PortableJDKInstaller(downloader: { url in
+            (
+                archiveURL,
+                HTTPURLResponse(
+                    url: url,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+            )
+        })
+
+        try await installer.install(
+            majorVersion: 21,
+            architecture: "aarch64",
+            targetDirectory: targetDirectory
+        )
+
+        let installedJava = targetDirectory
+            .appendingPathComponent("jdk-21.0.0/bin/java")
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: installedJava.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: installedJava.path))
+    }
+
     func testLaunchServiceBuildsMinecraftArgumentPreview() {
         let instance = LauncherInstance(
             name: "原版生存",
@@ -451,6 +607,19 @@ final class LauncherServiceTests: XCTestCase {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
         process.arguments = ["-q", "-j", archiveURL.path, versionURL.path]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw NSError(domain: "LauncherServiceTests", code: Int(process.terminationStatus))
+        }
+    }
+
+    private static func makeTarArchive(contentsOf directory: URL, at archiveURL: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        process.arguments = ["czf", archiveURL.path, "-C", directory.path, "."]
         process.standardOutput = Pipe()
         process.standardError = Pipe()
         try process.run()

@@ -189,6 +189,28 @@ final class LauncherStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testStoreReportsJDKInstallFailureInsteadOfCompletion() async {
+        let store = LauncherStore(
+            instances: [],
+            downloadJobs: [],
+            featuredProjects: [],
+            diagnostics: [],
+            javaRuntimes: [],
+            availableVersions: [],
+            javaRuntimeService: StubJavaRuntimeService(runtimes: []),
+            portableJDKInstaller: FailingPortableJDKInstaller(
+                error: PortableJDKInstallError.tarFailed(2, "损坏的压缩包")
+            )
+        )
+
+        await store.installJDK(majorVersion: 21)
+
+        XCTAssertEqual(store.jdkInstallProgress, 0)
+        XCTAssertEqual(store.diagnostics.first?.title, "Java 安装失败")
+        XCTAssertFalse(store.diagnostics.contains { $0.title == "Java 21 安装完成" })
+    }
+
+    @MainActor
     func testStoreLaunchesSelectedInstanceAndRecordsSession() async {
         let instanceID = UUID()
         let instance = LauncherInstance(
@@ -722,6 +744,18 @@ final class LauncherStoreTests: XCTestCase {
 
         func discoverInstalledRuntimes() async throws -> [JavaRuntime] {
             runtimes
+        }
+    }
+
+    private struct FailingPortableJDKInstaller: PortableJDKInstalling {
+        let error: Error
+
+        func install(
+            majorVersion: Int,
+            architecture: String,
+            targetDirectory: URL
+        ) async throws {
+            throw error
         }
     }
 

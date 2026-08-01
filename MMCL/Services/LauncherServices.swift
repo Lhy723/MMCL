@@ -851,6 +851,151 @@ struct SkinService: SkinServicing {
     }
 }
 
+protocol PortableJDKInstalling {
+    func install(
+        majorVersion: Int,
+        architecture: String,
+        targetDirectory: URL
+    ) async throws
+}
+
+enum PortableJDKInstallError: LocalizedError, Equatable {
+    case invalidHTTPResponse
+    case httpStatus(Int)
+    case tarLaunchFailed(String)
+    case tarFailed(Int32, String)
+    case missingJavaExecutable(URL)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidHTTPResponse:
+            return "JDK 下载返回了无效的 HTTP 响应。"
+        case .httpStatus(let statusCode):
+            return "JDK 下载失败：HTTP \(statusCode)。"
+        case .tarLaunchFailed(let detail):
+            return "无法启动 tar 解压程序：\(detail)"
+        case .tarFailed(let status, let stderr):
+            let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            return detail.isEmpty
+                ? "JDK 解压失败：tar 退出码 \(status)。"
+                : "JDK 解压失败：tar 退出码 \(status)：\(detail)"
+        case .missingJavaExecutable(let stagingDirectory):
+            return "JDK 解压完成但缺少可执行的 bin/java：\(stagingDirectory.path)"
+        }
+    }
+}
+
+struct PortableJDKInstaller: PortableJDKInstalling {
+    typealias Downloader = (URL) async throws -> (URL, URLResponse)
+
+    private let downloader: Downloader
+
+    init() {
+        downloader = { url in
+            try await URLSession.shared.download(from: url)
+        }
+    }
+
+    init(downloader: @escaping Downloader) {
+        self.downloader = downloader
+    }
+
+    func install(
+        majorVersion: Int,
+        architecture: String,
+        targetDirectory: URL
+    ) async throws {
+        let downloadURL = URL(string: "https://api.adoptium.net/v3/binary/latest/\(majorVersion)/ga/mac/\(architecture)/jdk/hotspot/normal/eclipse?project=jdk")!
+        let (temporaryURL, response) = try await downloader(downloadURL)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw PortableJDKInstallError.invalidHTTPResponse
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw PortableJDKInstallError.httpStatus(httpResponse.statusCode)
+        }
+
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: targetDirectory, withIntermediateDirectories: true)
+
+        let identifier = UUID().uuidString
+        let stagingDirectory = targetDirectory
+            .appendingPathComponent(".jdk-install-\(identifier)", isDirectory: true)
+        let archiveURL = targetDirectory.appendingPathComponent(".jdk-\(identifier).tar.gz")
+        var movedItems: [URL] = []
+        var installationSucceeded = false
+
+        defer {
+            if !installationSucceeded {
+                for item in movedItems.reversed() {
+                    try? fileManager.removeItem(at: item)
+                }
+            }
+            try? fileManager.removeItem(at: archiveURL)
+            try? fileManager.removeItem(at: stagingDirectory)
+        }
+
+        try fileManager.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+        try fileManager.copyItem(at: temporaryURL, to: archiveURL)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        process.arguments = ["xzf", archiveURL.path, "-C", stagingDirectory.path]
+        process.standardOutput = FileHandle.nullDevice
+        let stderrPipe = Pipe()
+        process.standardError = stderrPipe
+        do {
+            try process.run()
+        } catch {
+            throw PortableJDKInstallError.tarLaunchFailed(error.localizedDescription)
+        }
+        process.waitUntilExit()
+        let stderr = String(
+            decoding: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        guard process.terminationStatus == 0 else {
+            throw PortableJDKInstallError.tarFailed(process.terminationStatus, stderr)
+        }
+
+        guard let javaExecutable = findJavaExecutable(in: stagingDirectory),
+              fileManager.isExecutableFile(atPath: javaExecutable.path)
+        else {
+            throw PortableJDKInstallError.missingJavaExecutable(stagingDirectory)
+        }
+
+        let extractedItems = try fileManager.contentsOfDirectory(
+            at: stagingDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        for item in extractedItems {
+            let destination = targetDirectory.appendingPathComponent(item.lastPathComponent)
+            if fileManager.fileExists(atPath: destination.path) {
+                try fileManager.removeItem(at: destination)
+            }
+            try fileManager.moveItem(at: item, to: destination)
+            movedItems.append(destination)
+        }
+        installationSucceeded = true
+    }
+
+    private func findJavaExecutable(in directory: URL) -> URL? {
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+        for case let url as URL in enumerator
+        where url.lastPathComponent == "java"
+            && url.deletingLastPathComponent().lastPathComponent == "bin" {
+            return url
+        }
+        return nil
+    }
+}
+
 protocol JavaRuntimeServicing {
     func bundledSearchLocations() -> [URL]
     func recommendedMajorVersion(for gameVersion: String) -> Int

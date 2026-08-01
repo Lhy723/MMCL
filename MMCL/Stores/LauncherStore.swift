@@ -136,6 +136,7 @@ final class LauncherStore: ObservableObject {
     private let downloadService: DownloadServicing
     private let versionService: VersionManifestServicing
     private let javaRuntimeService: JavaRuntimeServicing
+    private let portableJDKInstaller: PortableJDKInstalling
     private let instanceService: InstanceServicing
     private let fabricService: FabricServicing
     private let quiltService: QuiltServicing
@@ -161,6 +162,7 @@ final class LauncherStore: ObservableObject {
         downloadService: DownloadServicing? = nil,
         versionService: VersionManifestServicing? = nil,
         javaRuntimeService: JavaRuntimeServicing? = nil,
+        portableJDKInstaller: PortableJDKInstalling? = nil,
         instanceService: InstanceServicing? = nil,
         fabricService: FabricServicing? = nil,
         quiltService: QuiltServicing? = nil,
@@ -178,6 +180,7 @@ final class LauncherStore: ObservableObject {
         let resolvedDownloadService = downloadService ?? DownloadService()
         let resolvedVersionService = versionService ?? VersionManifestService()
         let resolvedJavaRuntimeService = javaRuntimeService ?? JavaRuntimeService()
+        let resolvedPortableJDKInstaller = portableJDKInstaller ?? PortableJDKInstaller()
         let resolvedInstanceService = instanceService ?? InstanceService()
         let resolvedFabricService = fabricService ?? FabricService()
         let resolvedQuiltService = quiltService ?? QuiltService()
@@ -208,6 +211,7 @@ final class LauncherStore: ObservableObject {
         self.downloadService = resolvedDownloadService
         self.versionService = resolvedVersionService
         self.javaRuntimeService = resolvedJavaRuntimeService
+        self.portableJDKInstaller = resolvedPortableJDKInstaller
         self.instanceService = resolvedInstanceService
         self.fabricService = resolvedFabricService
         self.quiltService = resolvedQuiltService
@@ -1145,32 +1149,15 @@ extension LauncherStore {
         archString = "x64"
         #endif
 
-        let downloadURL = URL(string: "https://api.adoptium.net/v3/binary/latest/\(majorVersion)/ga/mac/\(archString)/jdk/hotspot/normal/eclipse?project=jdk")!
         let targetDir = javaRuntimeService.portableJDKDirectory
-        let fileManager = FileManager.default
 
         do {
-            try fileManager.createDirectory(at: targetDir, withIntermediateDirectories: true)
-            let tarFile = targetDir.appendingPathComponent("jdk-\(majorVersion).tar.gz")
-
-            // Download to temp, then move
-            let (tempURL, _) = try await URLSession.shared.download(from: downloadURL)
-            try? fileManager.removeItem(at: tarFile)
-            try fileManager.moveItem(at: tempURL, to: tarFile)
-
             jdkInstallProgress = 0.6
-
-            // Extract
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-            process.arguments = ["xzf", tarFile.path, "-C", targetDir.path]
-            let pipe = Pipe()
-            process.standardError = pipe
-            try process.run()
-            process.waitUntilExit()
-
-            // Cleanup tar
-            try? fileManager.removeItem(at: tarFile)
+            try await portableJDKInstaller.install(
+                majorVersion: majorVersion,
+                architecture: archString,
+                targetDirectory: targetDir
+            )
 
             jdkInstallProgress = 1.0
 
@@ -1187,12 +1174,13 @@ extension LauncherStore {
                 at: 0
             )
         } catch {
+            jdkInstallProgress = 0
             diagnostics.insert(
                 DiagnosticReport(
                     title: "Java 安装失败",
                     severity: .error,
                     summary: error.localizedDescription,
-                    suggestedActions: ["检查网络连接", "重试"]
+                    suggestedActions: ["检查网络连接、磁盘空间和目录权限", "重试"]
                 ),
                 at: 0
             )
