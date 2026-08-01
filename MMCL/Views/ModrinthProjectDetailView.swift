@@ -89,9 +89,7 @@ struct ModrinthProjectDetailView: View {
     private func loadVersions() async {
         isLoading = true
         do {
-            let loaderFilter: String? = store.selectedInstance.flatMap { instance in
-                loaderName(for: instance.loader)
-            }
+            let loaderFilter = store.selectedInstance?.loader.modrinthLoaderName
             versions = try await store.modrinthService.fetchVersions(
                 projectID: project.id,
                 gameVersion: store.selectedInstance?.gameVersion,
@@ -101,15 +99,6 @@ struct ModrinthProjectDetailView: View {
             versions = []
         }
         isLoading = false
-    }
-
-    private func loaderName(for loader: GameLoader) -> String? {
-        switch loader {
-        case .vanilla: return nil
-        case .fabric: return "fabric"
-        case .quilt: return "quilt"
-        case .forge: return "forge"
-        }
     }
 }
 

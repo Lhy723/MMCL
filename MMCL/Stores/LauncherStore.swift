@@ -1262,27 +1262,35 @@ extension LauncherStore {
             let (data, _) = try await URLSession.shared.data(from: url)
             let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
             let tagName = json?["tag_name"] as? String ?? ""
-            let version = tagName.replacingOccurrences(of: "v", with: "")
-            if !version.isEmpty && version != currentVersion {
-                latestVersion = version
-                updateAvailable = true
-
-                // Find downloadable asset (DMG or ZIP)
-                if let assets = json?["assets"] as? [[String: Any]] {
-                    updateDownloadURL = assets.compactMap { asset -> URL? in
-                        guard let name = asset["name"] as? String,
-                              let browserURL = asset["browser_download_url"] as? String,
-                              name.hasSuffix(".dmg") || name.hasSuffix(".zip"),
-                              let url = URL(string: browserURL) else { return nil }
-                        return url
-                    }.first
-                }
-
-                diagnostics.insert(
-                    DiagnosticReport(title: "发现新版本", severity: .info, summary: "最新版本 \(version)，当前版本 \(currentVersion)。", suggestedActions: ["点击「下载更新」获取最新版本"]),
-                    at: 0
-                )
+            guard let latest = SemanticVersion(tagName),
+                  let current = SemanticVersion(currentVersion),
+                  latest > current else {
+                latestVersion = nil
+                updateAvailable = false
+                updateDownloadURL = nil
+                return
             }
+
+            let version = latest.description
+            latestVersion = version
+            updateAvailable = true
+            updateDownloadURL = nil
+
+            // Find downloadable asset (DMG or ZIP)
+            if let assets = json?["assets"] as? [[String: Any]] {
+                updateDownloadURL = assets.compactMap { asset -> URL? in
+                    guard let name = asset["name"] as? String,
+                          let browserURL = asset["browser_download_url"] as? String,
+                          name.hasSuffix(".dmg") || name.hasSuffix(".zip"),
+                          let url = URL(string: browserURL) else { return nil }
+                    return url
+                }.first
+            }
+
+            diagnostics.insert(
+                DiagnosticReport(title: "发现新版本", severity: .info, summary: "最新版本 \(version)，当前版本 \(currentVersion)。", suggestedActions: ["点击「下载更新」获取最新版本"]),
+                at: 0
+            )
         } catch {
             // Silent fail for update check
         }

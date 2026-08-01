@@ -2,13 +2,203 @@ import Combine
 import Foundation
 import SwiftUI
 
+struct SemanticVersion: Comparable, Equatable, CustomStringConvertible {
+    let major: Int
+    let minor: Int
+    let patch: Int
+
+    private let prereleaseIdentifiers: [String]
+    private let buildMetadataIdentifiers: [String]
+
+    init?(_ rawValue: String) {
+        var normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+        if normalized.first == "v" || normalized.first == "V" {
+            normalized.removeFirst()
+        }
+        guard !normalized.isEmpty else { return nil }
+
+        let versionAndBuild = normalized.split(
+            separator: "+",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        )
+        guard versionAndBuild.count <= 2 else { return nil }
+
+        let coreAndPrerelease = versionAndBuild[0].split(
+            separator: "-",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        )
+        guard coreAndPrerelease.count <= 2 else { return nil }
+
+        let core = coreAndPrerelease[0].split(separator: ".", omittingEmptySubsequences: false)
+        guard core.count == 3,
+              let major = Self.parseCoreComponent(core[0]),
+              let minor = Self.parseCoreComponent(core[1]),
+              let patch = Self.parseCoreComponent(core[2]) else {
+            return nil
+        }
+
+        let prereleaseIdentifiers: [String]
+        if coreAndPrerelease.count == 2 {
+            guard let parsed = Self.parseIdentifiers(
+                coreAndPrerelease[1],
+                rejectLeadingZeros: true
+            ) else {
+                return nil
+            }
+            prereleaseIdentifiers = parsed
+        } else {
+            prereleaseIdentifiers = []
+        }
+
+        let buildMetadataIdentifiers: [String]
+        if versionAndBuild.count == 2 {
+            guard let parsed = Self.parseIdentifiers(
+                versionAndBuild[1],
+                rejectLeadingZeros: false
+            ) else {
+                return nil
+            }
+            buildMetadataIdentifiers = parsed
+        } else {
+            buildMetadataIdentifiers = []
+        }
+
+        self.major = major
+        self.minor = minor
+        self.patch = patch
+        self.prereleaseIdentifiers = prereleaseIdentifiers
+        self.buildMetadataIdentifiers = buildMetadataIdentifiers
+    }
+
+    static func isNewerVersion(_ latest: String, than current: String) -> Bool {
+        guard let latest = SemanticVersion(latest),
+              let current = SemanticVersion(current) else {
+            return false
+        }
+        return latest > current
+    }
+
+    var description: String {
+        var value = "\(major).\(minor).\(patch)"
+        if !prereleaseIdentifiers.isEmpty {
+            value += "-" + prereleaseIdentifiers.joined(separator: ".")
+        }
+        if !buildMetadataIdentifiers.isEmpty {
+            value += "+" + buildMetadataIdentifiers.joined(separator: ".")
+        }
+        return value
+    }
+
+    static func == (lhs: SemanticVersion, rhs: SemanticVersion) -> Bool {
+        lhs.major == rhs.major &&
+            lhs.minor == rhs.minor &&
+            lhs.patch == rhs.patch &&
+            lhs.prereleaseIdentifiers == rhs.prereleaseIdentifiers
+    }
+
+    static func < (lhs: SemanticVersion, rhs: SemanticVersion) -> Bool {
+        if lhs.major != rhs.major { return lhs.major < rhs.major }
+        if lhs.minor != rhs.minor { return lhs.minor < rhs.minor }
+        if lhs.patch != rhs.patch { return lhs.patch < rhs.patch }
+
+        switch (lhs.prereleaseIdentifiers.isEmpty, rhs.prereleaseIdentifiers.isEmpty) {
+        case (true, true):
+            return false
+        case (true, false):
+            return false
+        case (false, true):
+            return true
+        case (false, false):
+            break
+        }
+
+        for (left, right) in zip(lhs.prereleaseIdentifiers, rhs.prereleaseIdentifiers) {
+            guard left != right else { continue }
+
+            let leftIsNumeric = Self.isNumericIdentifier(left)
+            let rightIsNumeric = Self.isNumericIdentifier(right)
+            if leftIsNumeric && rightIsNumeric {
+                if left.count != right.count {
+                    return left.count < right.count
+                }
+                return left < right
+            }
+            if leftIsNumeric != rightIsNumeric {
+                return leftIsNumeric
+            }
+            return left < right
+        }
+
+        return lhs.prereleaseIdentifiers.count < rhs.prereleaseIdentifiers.count
+    }
+
+    private static func parseCoreComponent(_ value: Substring) -> Int? {
+        guard isNumericIdentifier(value),
+              value.count == 1 || value.first != "0" else {
+            return nil
+        }
+        return Int(value)
+    }
+
+    private static func parseIdentifiers(
+        _ value: Substring,
+        rejectLeadingZeros: Bool
+    ) -> [String]? {
+        let identifiers = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard identifiers.allSatisfy({ isValidIdentifier($0) }) else { return nil }
+        if rejectLeadingZeros {
+            guard identifiers.allSatisfy({
+                !isNumericIdentifier($0) || $0.count == 1 || $0.first != "0"
+            }) else {
+                return nil
+            }
+        }
+        return identifiers.map(String.init)
+    }
+
+    private static func isNumericIdentifier(_ value: Substring) -> Bool {
+        !value.isEmpty && value.utf8.allSatisfy { byte in
+            byte >= 48 && byte <= 57
+        }
+    }
+
+    private static func isNumericIdentifier(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.allSatisfy { byte in
+            byte >= 48 && byte <= 57
+        }
+    }
+
+    private static func isValidIdentifier(_ value: Substring) -> Bool {
+        !value.isEmpty && value.utf8.allSatisfy { byte in
+            (byte >= 48 && byte <= 57) ||
+                (byte >= 65 && byte <= 90) ||
+                (byte >= 97 && byte <= 122) ||
+                byte == 45
+        }
+    }
+}
+
 enum GameLoader: String, Codable, CaseIterable, Identifiable {
     case vanilla = "Vanilla"
     case fabric = "Fabric"
     case quilt = "Quilt"
     case forge = "Forge"
+    case neoForge = "NeoForge"
 
     var id: String { rawValue }
+
+    var modrinthLoaderName: String? {
+        switch self {
+        case .vanilla: return nil
+        case .fabric: return "fabric"
+        case .quilt: return "quilt"
+        case .forge: return "forge"
+        case .neoForge: return "neoforge"
+        }
+    }
 }
 
 enum VersionIsolation: String, Codable, CaseIterable, Identifiable {
@@ -23,7 +213,7 @@ enum VersionIsolation: String, Codable, CaseIterable, Identifiable {
     var helpText: String {
         switch self {
         case .off: return "所有版本共享存档、Mod、资源包"
-        case .moddableVersions: return "Forge/Fabric 等互相独立，原版共享"
+        case .moddableVersions: return "Forge/Fabric/NeoForge 等互相独立，原版共享"
         case .snapshots: return "快照与发布版、远古版本等隔离"
         case .moddableAndSnapshots: return "同时隔离可安装 Mod 版本与非正式版"
         case .all: return "不同版本的存档、Mod、资源包均不互通"
@@ -193,6 +383,7 @@ struct LauncherInstance: Identifiable, Codable, Equatable {
     var blockIcon: String {
         switch loader {
         case .forge: return "Anvil"
+        case .neoForge: return "NeoForge"
         case .fabric: return "Fabric"
         case .quilt: return "Egg"
         case .vanilla:

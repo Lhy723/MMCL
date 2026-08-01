@@ -1,6 +1,38 @@
 import XCTest
 @testable import MMCL
 
+@MainActor
+final class SemanticVersionTests: XCTestCase {
+    func testSemanticVersionComparesNumericComponents() {
+        XCTAssertTrue(SemanticVersion("0.10.0")! > SemanticVersion("0.9.0")!)
+        XCTAssertTrue(SemanticVersion("0.2.0")! > SemanticVersion("0.1.9")!)
+    }
+
+    func testSemanticVersionOrdersPrereleaseIdentifiers() {
+        XCTAssertTrue(SemanticVersion("1.0.0-alpha")! < SemanticVersion("1.0.0-beta")!)
+        XCTAssertTrue(SemanticVersion("1.0.0-beta.1")! < SemanticVersion("1.0.0-beta.2")!)
+        XCTAssertTrue(SemanticVersion("1.0.0-rc.1")! < SemanticVersion("1.0.0")!)
+    }
+
+    func testNewerVersionRejectsDowngradesAndInvalidVersions() {
+        XCTAssertTrue(SemanticVersion.isNewerVersion("v0.10.0", than: "0.9.0"))
+        XCTAssertTrue(SemanticVersion.isNewerVersion("0.2.0", than: "0.1.9"))
+        XCTAssertFalse(SemanticVersion.isNewerVersion("0.9.0", than: "0.10.0"))
+        XCTAssertFalse(SemanticVersion.isNewerVersion("1.0.0", than: "1.0.0"))
+        XCTAssertFalse(SemanticVersion.isNewerVersion("1.0.0-rc.1", than: "1.0.0"))
+        XCTAssertFalse(SemanticVersion.isNewerVersion("not-a-version", than: "0.1.0"))
+        XCTAssertFalse(SemanticVersion.isNewerVersion("vv1.1.0", than: "1.0.0"))
+    }
+
+    func testSemanticVersionIgnoresBuildMetadataForPrecedence() {
+        let first = SemanticVersion("1.0.0+build.1")
+        let second = SemanticVersion("1.0.0+build.2")
+
+        XCTAssertEqual(first, second)
+        XCTAssertFalse(SemanticVersion.isNewerVersion("1.0.0+build.2", than: "1.0.0+build.1"))
+    }
+}
+
 final class LauncherStoreTests: XCTestCase {
     @MainActor
     func testStoreBuildsLaunchPreviewForSelectedInstanceAndJava() {

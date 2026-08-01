@@ -223,7 +223,7 @@ struct InstanceDetailView: View {
             }
 
             // Loader-specific actions
-            if instance.loader == .fabric || instance.loader == .quilt || instance.loader == .forge {
+            if instance.loader == .fabric || instance.loader == .quilt || instance.loader == .forge || instance.loader == .neoForge {
                 Divider()
                 HStack(spacing: 12) {
                     if instance.loader == .fabric {
@@ -243,6 +243,8 @@ struct InstanceDetailView: View {
                             Label("安装 Forge", systemImage: "hammer")
                         }
                         .buttonStyle(.bordered)
+                    }
+                    if instance.loader == .neoForge {
                         Button { Task { await store.installNeoForgeLoader(for: instance) } } label: {
                             Label("安装 NeoForge", systemImage: "hammer.fill")
                         }

@@ -71,7 +71,7 @@ MMCL (Melody Minecraft Launcher) — macOS Minecraft launcher. SwiftUI app with 
 - Microsoft auth uses device code flow (browser-based OAuth)
 - Mod management: toggle by renaming `.jar` ↔ `.jar.disabled`
 - Instance status verified against actual files on disk at startup
-- Block icons: Grass (release), CommandBlock (snapshot), CobbleStone (old), Anvil (Forge), Fabric, Egg (Quilt)
+- Block icons: Grass (release), CommandBlock (snapshot), CobbleStone (old), Anvil (Forge), NeoForge, Fabric, Egg (Quilt)
 - Animations use `Animation.mmclSpring()` with configurable duration scale
 
 ## Testing

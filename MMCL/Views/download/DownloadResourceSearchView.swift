@@ -560,6 +560,11 @@ struct DownloadResourceSearchView: View {
                 if let categoryFacet = selectedCategory.modrinthFacet {
                     facets.append([categoryFacet])
                 }
+                if let selectedLoader,
+                   let loader = GameLoader(rawValue: selectedLoader),
+                   let loaderFacet = loader.modrinthLoaderName {
+                    facets.append(["categories:\(loaderFacet)"])
+                }
                 let response = try await store.modrinthService.search(query: query, facets: facets, index: index, offset: offset)
                 items.append(contentsOf: response.hits.map { .modrinth($0) })
                 total = response.totalHits
