@@ -67,10 +67,10 @@ MMCL (Melody Minecraft Launcher) — macOS Minecraft launcher. SwiftUI app with 
 - Portable JDK installed to `~/Library/Application Support/MMCL/JDK/`
 - Download sources: official, BMCLAPI, custom mirror
 - Java recommendation: major version 8 (≤1.16), 17 (1.17–1.19), 21 (≥1.20)
-- Apple Silicon auto-detection: ZGC + optimized JVM args for arm64
+- Runtime Java architecture selection with G1/JIT optimizations for Apple Silicon
 - Downloads execute concurrently via `TaskGroup` (max 4 parallel)
 - Microsoft auth uses device code flow (browser-based OAuth)
-- App updates use the latest stable GitHub Release API endpoint; ZIP assets are validated and installed by a detached restart helper, with DMG retained for manual fallback
+- App updates use the latest stable GitHub Release API endpoint; architecture-specific ZIP assets are selected and validated before installation by a detached restart helper, with matching DMG assets retained for manual fallback
 - Mod management: toggle by renaming `.jar` ↔ `.jar.disabled`
 - Instance status verified against actual files on disk at startup
 - Block icons: Grass (release), CommandBlock (snapshot), CobbleStone (old), Anvil (Forge), NeoForge, Fabric, Egg (Quilt)

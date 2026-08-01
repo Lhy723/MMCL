@@ -2,6 +2,23 @@
 
 MMCL 的版本变更记录。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本号遵循语义化版本。
 
+## [0.1.2] - 2026-08-02
+
+0.1.2 主要完善启动参数、macOS 架构适配和跨架构发布流程。
+
+### 新增
+
+- 新增分层 JVM 参数构建：版本元数据、启动器默认参数和实例自定义参数按优先级合并，避免重复覆盖。
+- 新增 Java 版本和架构感知的 JVM 参数优化，包括编码、G1/JIT、代码缓存和 macOS 集成参数。
+- Java 扫描和推荐选择改为识别实际可执行文件架构，Apple Silicon 优先使用原生 arm64 Java。
+- Release 工作流分别生成 arm64 与 x86_64 的 ZIP 自动更新包和 DMG 手动安装包。
+- 应用内更新按当前架构选择 GitHub Release 资产，并在替换前校验应用架构。
+
+### 工程
+
+- 增加 JVM 参数、架构资产选择和错误架构保护的回归测试。
+- 应用版本更新为 `0.1.2`，Build Number 更新为 `3`。
+
 ## [0.1.1] - 2026-08-01
 
 0.1.1 是在 0.1.0 基础上的稳定性与发布流程更新，重点修复了“界面显示完成但实际无法启动/安装”的问题。
@@ -36,5 +53,6 @@ MMCL 的版本变更记录。格式参考 [Keep a Changelog](https://keepachange
 
 首个公开版本，提供 Minecraft 实例管理、原版与 Mod 加载器安装、Modrinth/CurseForge 搜索、Java 管理、Microsoft OAuth 登录、离线账号、资源包/光影包管理和基础 GitHub Release 检查能力。
 
+[0.1.2]: https://github.com/Lhy723/MMCL/releases/tag/v0.1.2
 [0.1.1]: https://github.com/Lhy723/MMCL/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Lhy723/MMCL/releases/tag/v0.1.0

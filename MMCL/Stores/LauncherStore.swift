@@ -95,7 +95,7 @@ final class LauncherStore: ObservableObject {
 
     let currentVersion: String = (Bundle(identifier: "melody.MMCL") ?? Bundle.main).object(
         forInfoDictionaryKey: "CFBundleShortVersionString"
-    ) as? String ?? "0.1.1"
+    ) as? String ?? "0.1.2"
     @Published var latestVersion: String?
     @Published var updateAvailable = false
     @Published var updateDownloadURL: URL?
@@ -1151,12 +1151,7 @@ extension LauncherStore {
         jdkInstallProgress = 0
         defer { isInstallingJDK = false }
 
-        let archString: String
-        #if arch(arm64)
-        archString = "aarch64"
-        #else
-        archString = "x64"
-        #endif
+        let archString = RuntimeArchitecture.currentSystem == .arm64 ? "aarch64" : "x64"
 
         let targetDir = javaRuntimeService.portableJDKDirectory
 
@@ -1217,12 +1212,40 @@ extension LauncherStore {
     }
 
     private func selectRecommendedJavaRuntime() {
+        let systemArchitecture = RuntimeArchitecture.currentSystem
         guard let selectedInstance else {
-            selectedJavaRuntimeID = javaRuntimes.first?.id
+            selectedJavaRuntimeID = javaRuntimes
+                .sorted {
+                    javaArchitecturePreference($0, systemArchitecture: systemArchitecture)
+                        < javaArchitecturePreference($1, systemArchitecture: systemArchitecture)
+                }
+                .first?.id
             return
         }
         let recommendedMajor = javaRuntimeService.recommendedMajorVersion(for: selectedInstance.gameVersion)
-        selectedJavaRuntimeID = javaRuntimes.first { $0.majorVersion == recommendedMajor }?.id ?? javaRuntimes.first?.id
+        let candidates = javaRuntimes.filter { $0.majorVersion == recommendedMajor }
+        selectedJavaRuntimeID = candidates
+            .sorted {
+                javaArchitecturePreference($0, systemArchitecture: systemArchitecture)
+                    < javaArchitecturePreference($1, systemArchitecture: systemArchitecture)
+            }
+            .first?.id
+            ?? javaRuntimes
+                .sorted {
+                    javaArchitecturePreference($0, systemArchitecture: systemArchitecture)
+                        < javaArchitecturePreference($1, systemArchitecture: systemArchitecture)
+                }
+                .first?.id
+    }
+
+    private func javaArchitecturePreference(
+        _ runtime: JavaRuntime,
+        systemArchitecture: RuntimeArchitecture
+    ) -> Int {
+        if runtime.architecture == systemArchitecture { return 0 }
+        if runtime.architecture == .universal { return 1 }
+        if runtime.architecture == .unknown { return 3 }
+        return 2
     }
 
     func planVanillaInstall(metadata: VersionMetadata, assetIndex: AssetIndex? = nil, for instance: LauncherInstance) {

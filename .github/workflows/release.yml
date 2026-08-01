@@ -19,37 +19,48 @@ jobs:
           xcode_path=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
           sudo xcode-select -s "$xcode_path"
 
-      - name: Build Release
+      - name: Build architecture-specific Releases
         run: |
-          xcodebuild build \
-            -project MMCL.xcodeproj \
-            -scheme MMCL \
-            -destination 'platform=macOS' \
-            -configuration Release \
-            -derivedDataPath build \
-            MARKETING_VERSION="${GITHUB_REF_NAME#v}" \
-            CURRENT_PROJECT_VERSION=2 \
-            ARCHS="arm64 x86_64" \
-            ONLY_ACTIVE_ARCH=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            MACOSX_DEPLOYMENT_TARGET=14.0 \
-            -quiet
+          set -euo pipefail
 
-      - name: Create ZIP and DMG
-        run: |
-          app_path="build/Build/Products/Release/MMCL.app"
-          echo "Found app at: $app_path"
-          ditto -c -k --sequesterRsrc --keepParent "$app_path" \
-            "MMCL-${GITHUB_REF_NAME}.zip"
-          hdiutil create -volname "MMCL" \
-            -srcfolder "$app_path" \
-            -ov -format UDZO \
-            "MMCL-${GITHUB_REF_NAME}.dmg"
+          build_architecture() {
+            local arch="$1"
+            local derived_data="build/${arch}"
+            local app_path="${derived_data}/Build/Products/Release/MMCL.app"
+
+            xcodebuild build \
+              -project MMCL.xcodeproj \
+              -scheme MMCL \
+              -destination 'generic/platform=macOS' \
+              -configuration Release \
+              -derivedDataPath "$derived_data" \
+              MARKETING_VERSION="${GITHUB_REF_NAME#v}" \
+              CURRENT_PROJECT_VERSION=3 \
+              ARCHS="$arch" \
+              ONLY_ACTIVE_ARCH=YES \
+              CODE_SIGNING_ALLOWED=NO \
+              MACOSX_DEPLOYMENT_TARGET=14.0 \
+              -quiet
+
+            test -d "$app_path"
+            lipo -archs "$app_path/Contents/MacOS/MMCL" | grep -qw "$arch"
+            ditto -c -k --sequesterRsrc --keepParent "$app_path" \
+              "MMCL-${GITHUB_REF_NAME}-${arch}.zip"
+            hdiutil create -volname "MMCL-${arch}" \
+              -srcfolder "$app_path" \
+              -ov -format UDZO \
+              "MMCL-${GITHUB_REF_NAME}-${arch}.dmg"
+          }
+
+          build_architecture arm64
+          build_architecture x86_64
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            MMCL-${{ github.ref_name }}.zip
-            MMCL-${{ github.ref_name }}.dmg
+            MMCL-${{ github.ref_name }}-arm64.zip
+            MMCL-${{ github.ref_name }}-arm64.dmg
+            MMCL-${{ github.ref_name }}-x86_64.zip
+            MMCL-${{ github.ref_name }}-x86_64.dmg
           generate_release_notes: true

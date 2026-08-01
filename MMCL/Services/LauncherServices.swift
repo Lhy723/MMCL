@@ -1094,10 +1094,20 @@ struct JavaRuntimeService: JavaRuntimeServicing {
         let prefixX86 = URL(fileURLWithPath: "/usr/local/opt")
         var runtimes: [JavaRuntime] = []
         for optDir in [prefix, prefixX86] {
+            let javaLink = optDir.appendingPathComponent("java/bin/java")
+            if FileManager.default.fileExists(atPath: javaLink.path),
+               let runtime = parseJavaHome(
+                home: javaLink.deletingLastPathComponent().deletingLastPathComponent(),
+                name: "Homebrew java"
+               ) {
+                runtimes.append(runtime)
+            }
+
             guard let contents = try? FileManager.default.contentsOfDirectory(
                 at: optDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
             ) else { continue }
-            for item in contents where item.lastPathComponent.hasPrefix("openjdk@") {
+            for item in contents
+            where item.lastPathComponent == "openjdk" || item.lastPathComponent.hasPrefix("openjdk@") {
                 let home = item.appendingPathComponent("libexec/openjdk.jdk/Contents/Home", isDirectory: true)
                 if FileManager.default.fileExists(atPath: home.appendingPathComponent("bin/java").path) {
                     if let runtime = parseJavaHome(home: home, name: "Homebrew \(item.lastPathComponent)") {
@@ -1166,11 +1176,7 @@ struct JavaRuntimeService: JavaRuntimeServicing {
         let version = String(output[versionRange])
         let majorVersion = Int(version.split(separator: ".").first ?? "") ?? 0
 
-        #if arch(arm64)
-        let arch: RuntimeArchitecture = .arm64
-        #else
-        let arch: RuntimeArchitecture = .x86_64
-        #endif
+        let arch = RuntimeArchitecture.detect(from: javaBin)
 
         return JavaRuntime(
             name: name,
@@ -1283,53 +1289,48 @@ struct LaunchService: LaunchServicing {
             account: account
         )
 
+        let userJVMArguments = effectiveUserJVMArguments(for: instance.profile)
+
         if let metadata, let arguments = metadata.arguments {
-            let jvmArguments = expand(arguments.jvm, substitutions: substitutions, operatingSystem: "osx")
+            let versionJVMArguments = expand(arguments.jvm, substitutions: substitutions, operatingSystem: "osx")
             let gameArguments = expand(arguments.game, substitutions: substitutions, operatingSystem: "osx")
+            let jvmArguments = buildJVMArguments(
+                instance: instance,
+                java: java,
+                minecraftDirectory: minecraftDirectory,
+                nativesDirectory: nativesDirectory,
+                versionArguments: versionJVMArguments,
+                userArguments: userJVMArguments
+            )
 
-            // Auto-detect JVM args for Apple Silicon when using defaults
-            var extraArgs = instance.profile.jvmArguments
-            if extraArgs == ["-XX:+UseG1GC", "-XX:+UnlockExperimentalVMOptions"] || extraArgs.isEmpty {
-                #if arch(arm64)
-                extraArgs = ["-XX:+UseZGC", "-XX:+ZGenerational", "-XX:+UnlockExperimentalVMOptions", "-XX:G1HeapRegionSize=16M"]
-                #endif
-            }
-
-            return [
-                java.executableURL.path,
-                "-Xmx\(instance.profile.memoryMegabytes)m"
-            ]
-            + extraArgs
-            + jvmArguments
-            + [mainClass]
-            + gameArguments
+            return [java.executableURL.path] + jvmArguments + [mainClass] + gameArguments
         }
 
         if let metadata, let legacyArguments = metadata.minecraftArguments {
-            return [
-                java.executableURL.path,
-                "-Xmx\(instance.profile.memoryMegabytes)m",
-                "-Djava.library.path=\(nativesDirectory.path)"
-            ]
-            + instance.profile.jvmArguments
-            + [
-                "-cp",
-                classpath,
-                mainClass
-            ]
-            + expandLegacyArguments(legacyArguments, substitutions: substitutions)
+            let jvmArguments = buildJVMArguments(
+                instance: instance,
+                java: java,
+                minecraftDirectory: minecraftDirectory,
+                nativesDirectory: nativesDirectory,
+                versionArguments: ["-cp", classpath],
+                userArguments: userJVMArguments
+            )
+
+            return [java.executableURL.path]
+                + jvmArguments
+                + [mainClass]
+                + expandLegacyArguments(legacyArguments, substitutions: substitutions)
         }
 
-        return [
-            java.executableURL.path,
-            "-Xmx\(instance.profile.memoryMegabytes)m",
-            "-Djava.library.path=\(nativesDirectory.path)"
-        ]
-        + instance.profile.jvmArguments
-        + [
-            "-cp",
-            classpath,
-            mainClass,
+        let jvmArguments = buildJVMArguments(
+            instance: instance,
+            java: java,
+            minecraftDirectory: minecraftDirectory,
+            nativesDirectory: nativesDirectory,
+            versionArguments: ["-cp", classpath],
+            userArguments: userJVMArguments
+        )
+        let fallbackGameArguments = [
             "--username",
             substitutions["auth_player_name"] ?? instance.profile.offlineUsername,
             "--version",
@@ -1342,9 +1343,57 @@ struct LaunchService: LaunchServicing {
             assetIndex,
             "--accessToken",
             substitutions["auth_access_token"] ?? "0",
+            "--uuid",
+            substitutions["auth_uuid"] ?? "00000000000000000000000000000000",
+            "--xuid",
+            substitutions["auth_xuid"] ?? "",
             "--userType",
             substitutions["user_type"] ?? "legacy"
         ]
+
+        return [java.executableURL.path] + jvmArguments + [mainClass] + fallbackGameArguments
+    }
+
+    private func buildJVMArguments(
+        instance: LauncherInstance,
+        java: JavaRuntime,
+        minecraftDirectory: URL,
+        nativesDirectory: URL,
+        versionArguments: [String],
+        userArguments: [String]
+    ) -> [String] {
+        JVMArgumentBuilder().build(
+            JVMArgumentBuildContext(
+                javaMajorVersion: java.majorVersion,
+                javaArchitecture: java.architecture,
+                memoryMegabytes: instance.profile.memoryMegabytes,
+                nativeDirectory: nativesDirectory,
+                gameDirectory: minecraftDirectory,
+                versionArguments: versionArguments,
+                userArguments: userArguments,
+                useGeneratedArguments: instance.profile.useGeneratedJVMArguments,
+                useOptimizingArguments: instance.profile.useOptimizingJVMArguments,
+                isMacOS: true,
+                launcherName: "MMCL"
+            )
+        )
+    }
+
+    private var launcherVersion: String {
+        (Bundle(identifier: "melody.MMCL") ?? Bundle.main)
+            .object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.2"
+    }
+
+    private func effectiveUserJVMArguments(for profile: LaunchProfile) -> [String] {
+        // Profiles created before the layered builder stored these two values
+        // as if they were user input. Treat that exact pair as the old
+        // automatic default so existing instances receive the complete set of
+        // generated defaults after upgrading.
+        let legacyAutomaticDefaults = ["-XX:+UseG1GC", "-XX:+UnlockExperimentalVMOptions"]
+        if profile.useGeneratedJVMArguments, profile.jvmArguments == legacyAutomaticDefaults {
+            return []
+        }
+        return profile.jvmArguments
     }
 
     func preflight(
@@ -1516,7 +1565,7 @@ struct LaunchService: LaunchServicing {
             "version_type": "release",
             "natives_directory": nativesDirectory.path,
             "launcher_name": "MMCL",
-            "launcher_version": "0.1",
+            "launcher_version": launcherVersion,
             "classpath": classpath,
             "resolution_width": String(instance.profile.resolutionWidth),
             "resolution_height": String(instance.profile.resolutionHeight)

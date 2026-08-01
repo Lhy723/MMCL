@@ -336,11 +336,68 @@ struct LaunchProfile: Codable, Equatable {
     var jvmArguments: [String]
     var resolutionWidth: Int
     var resolutionHeight: Int
+    /// Adds safe launcher defaults such as encoding, native loading and
+    /// macOS integration. Explicit JVM arguments always take precedence.
+    var useGeneratedJVMArguments: Bool
+    /// Adds the optional G1/JIT tuning defaults inspired by HMCL.
+    var useOptimizingJVMArguments: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case offlineUsername
+        case memoryMegabytes
+        case jvmArguments
+        case resolutionWidth
+        case resolutionHeight
+        case useGeneratedJVMArguments
+        case useOptimizingJVMArguments
+    }
+
+    init(
+        offlineUsername: String,
+        memoryMegabytes: Int,
+        jvmArguments: [String],
+        resolutionWidth: Int,
+        resolutionHeight: Int,
+        useGeneratedJVMArguments: Bool = true,
+        useOptimizingJVMArguments: Bool = true
+    ) {
+        self.offlineUsername = offlineUsername
+        self.memoryMegabytes = memoryMegabytes
+        self.jvmArguments = jvmArguments
+        self.resolutionWidth = resolutionWidth
+        self.resolutionHeight = resolutionHeight
+        self.useGeneratedJVMArguments = useGeneratedJVMArguments
+        self.useOptimizingJVMArguments = useOptimizingJVMArguments
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            offlineUsername: try container.decode(String.self, forKey: .offlineUsername),
+            memoryMegabytes: try container.decode(Int.self, forKey: .memoryMegabytes),
+            jvmArguments: try container.decodeIfPresent([String].self, forKey: .jvmArguments) ?? [],
+            resolutionWidth: try container.decode(Int.self, forKey: .resolutionWidth),
+            resolutionHeight: try container.decode(Int.self, forKey: .resolutionHeight),
+            useGeneratedJVMArguments: try container.decodeIfPresent(Bool.self, forKey: .useGeneratedJVMArguments) ?? true,
+            useOptimizingJVMArguments: try container.decodeIfPresent(Bool.self, forKey: .useOptimizingJVMArguments) ?? true
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(offlineUsername, forKey: .offlineUsername)
+        try container.encode(memoryMegabytes, forKey: .memoryMegabytes)
+        try container.encode(jvmArguments, forKey: .jvmArguments)
+        try container.encode(resolutionWidth, forKey: .resolutionWidth)
+        try container.encode(resolutionHeight, forKey: .resolutionHeight)
+        try container.encode(useGeneratedJVMArguments, forKey: .useGeneratedJVMArguments)
+        try container.encode(useOptimizingJVMArguments, forKey: .useOptimizingJVMArguments)
+    }
 
     static let `default` = LaunchProfile(
         offlineUsername: "Steve",
         memoryMegabytes: 4096,
-        jvmArguments: ["-XX:+UseG1GC", "-XX:+UnlockExperimentalVMOptions"],
+        jvmArguments: [],
         resolutionWidth: 854,
         resolutionHeight: 480
     )
@@ -1696,7 +1753,7 @@ struct JVMPreset: Identifiable, Codable, Equatable {
 
     static let defaults = [
         JVMPreset(id: UUID(), name: "自动（推荐）", arguments: [], isEnabled: true),
-        JVMPreset(id: UUID(), name: "Apple Silicon 优化", arguments: ["-XX:+UseZGC", "-XX:+ZGenerational", "-XX:+UnlockExperimentalVMOptions", "-XX:G1HeapRegionSize=16M"], isEnabled: false),
+        JVMPreset(id: UUID(), name: "Apple Silicon / G1 优化", arguments: ["-XX:+UseG1GC", "-XX:+UnlockExperimentalVMOptions", "-XX:+UnlockDiagnosticVMOptions", "-XX:G1HeapRegionSize=32m", "-XX:MaxGCPauseMillis=50"], isEnabled: false),
         JVMPreset(id: UUID(), name: "G1GC", arguments: ["-XX:+UseG1GC", "-XX:+UnlockExperimentalVMOptions"], isEnabled: false),
         JVMPreset(id: UUID(), name: "ZGC（低延迟）", arguments: ["-XX:+UseZGC", "-XX:+ZGenerational"], isEnabled: false),
         JVMPreset(id: UUID(), name: "大内存", arguments: ["-XX:+UseG1GC", "-XX:MaxGCPauseMillis=20", "-XX:+UnlockExperimentalVMOptions", "-XX:G1NewSizePercent=30", "-XX:G1MaxNewSizePercent=40"], isEnabled: false)

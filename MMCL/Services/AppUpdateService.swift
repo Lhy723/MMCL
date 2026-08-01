@@ -16,6 +16,24 @@ struct AppUpdateAsset: Equatable {
     var isDiskImage: Bool {
         name.lowercased().hasSuffix(".dmg")
     }
+
+    var architecture: RuntimeArchitecture? {
+        let normalizedName = name.lowercased()
+        if normalizedName.contains("universal") {
+            return .universal
+        }
+        if normalizedName.contains("arm64")
+            || normalizedName.contains("aarch64")
+            || normalizedName.contains("apple-silicon") {
+            return .arm64
+        }
+        if normalizedName.contains("x86_64")
+            || normalizedName.contains("x86-64")
+            || normalizedName.contains("intel") {
+            return .x86_64
+        }
+        return nil
+    }
 }
 
 struct AppUpdateRelease: Equatable {
@@ -25,24 +43,85 @@ struct AppUpdateRelease: Equatable {
     let notes: String
     let htmlURL: URL?
     let assets: [AppUpdateAsset]
+    /// The architecture selected when this release was fetched. An unknown
+    /// value is used by tests and manually-created release values.
+    let targetArchitecture: RuntimeArchitecture
+
+    init(
+        tagName: String,
+        version: SemanticVersion,
+        title: String,
+        notes: String,
+        htmlURL: URL?,
+        assets: [AppUpdateAsset],
+        targetArchitecture: RuntimeArchitecture = .unknown
+    ) {
+        self.tagName = tagName
+        self.version = version
+        self.title = title
+        self.notes = notes
+        self.htmlURL = htmlURL
+        self.assets = assets
+        self.targetArchitecture = targetArchitecture
+    }
 
     var automaticAsset: AppUpdateAsset? {
-        assets
-            .filter(\.isZipArchive)
-            .sorted { Self.assetScore($0) > Self.assetScore($1) }
-            .first
+        automaticAsset(for: targetArchitecture)
     }
 
     var manualAsset: AppUpdateAsset? {
-        assets.first(where: \.isDiskImage)
+        manualAsset(for: targetArchitecture)
     }
 
-    private static func assetScore(_ asset: AppUpdateAsset) -> Int {
+    func automaticAsset(for architecture: RuntimeArchitecture) -> AppUpdateAsset? {
+        bestAsset(for: architecture, matching: \.isZipArchive)
+    }
+
+    func manualAsset(for architecture: RuntimeArchitecture) -> AppUpdateAsset? {
+        bestAsset(for: architecture, matching: \.isDiskImage)
+    }
+
+    private func bestAsset(
+        for architecture: RuntimeArchitecture,
+        matching predicate: (AppUpdateAsset) -> Bool
+    ) -> AppUpdateAsset? {
+        assets
+            .filter(predicate)
+            .compactMap { asset -> (asset: AppUpdateAsset, score: Int)? in
+                guard let score = Self.assetScore(asset, for: architecture) else { return nil }
+                return (asset, score)
+            }
+            .sorted { $0.score > $1.score }
+            .first?.asset
+    }
+
+    private static func assetScore(_ asset: AppUpdateAsset, for architecture: RuntimeArchitecture) -> Int? {
         let normalizedName = asset.name.lowercased()
         var score = 0
         if normalizedName.contains("mmcl") { score += 100 }
         if normalizedName.contains("mac") { score += 10 }
-        if normalizedName.contains("universal") { score += 5 }
+
+        if let assetArchitecture = asset.architecture {
+            switch architecture {
+            case .arm64, .x86_64:
+                if assetArchitecture == architecture {
+                    score += 1_000
+                } else if assetArchitecture == .universal {
+                    score += 500
+                } else {
+                    return nil
+                }
+            case .universal:
+                guard assetArchitecture == .universal else { return nil }
+                score += 1_000
+            case .unknown:
+                guard assetArchitecture == .universal else { return nil }
+                score += 500
+            }
+        } else {
+            // Keep accepting older releases that shipped one generic ZIP/DMG.
+            score += 100
+        }
         return score
     }
 }
@@ -69,7 +148,7 @@ enum AppUpdateError: LocalizedError, Equatable {
         case .invalidReleasePayload:
             return "GitHub Release 信息缺少有效版本号或下载地址。"
         case .noAutomaticAsset:
-            return "该 Release 没有可用于自动更新的 MMCL ZIP 文件。"
+            return "该 Release 没有匹配当前 Mac 架构的 MMCL ZIP 文件。"
         case .checksumMismatch:
             return "更新包校验失败，文件可能已损坏或被篡改。"
         case .archiveExtractionFailed(let details):
@@ -110,6 +189,7 @@ final class AppUpdateService: AppUpdateServicing {
     private let processLauncher: ProcessLauncher
     private let currentApplicationURLProvider: CurrentApplicationURLProvider
     private let applicationTerminator: ApplicationTerminator
+    private let architectureProvider: () -> RuntimeArchitecture
 
     init(
         dataLoader: @escaping DataLoader = { request in
@@ -123,7 +203,8 @@ final class AppUpdateService: AppUpdateServicing {
         currentApplicationURLProvider: @escaping CurrentApplicationURLProvider = { Bundle.main.bundleURL },
         applicationTerminator: @escaping ApplicationTerminator = {
             NSApplication.shared.terminate(nil)
-        }
+        },
+        architectureProvider: @escaping () -> RuntimeArchitecture = { RuntimeArchitecture.currentSystem }
     ) {
         self.dataLoader = dataLoader
         self.downloadLoader = downloadLoader
@@ -131,6 +212,7 @@ final class AppUpdateService: AppUpdateServicing {
         self.processLauncher = processLauncher
         self.currentApplicationURLProvider = currentApplicationURLProvider
         self.applicationTerminator = applicationTerminator
+        self.architectureProvider = architectureProvider
     }
 
     func fetchLatestRelease() async throws -> AppUpdateRelease {
@@ -166,7 +248,8 @@ final class AppUpdateService: AppUpdateServicing {
                 title: payload.name ?? payload.tagName,
                 notes: payload.body ?? "",
                 htmlURL: payload.htmlURL.flatMap(URL.init(string:)),
-                assets: assets
+                assets: assets,
+                targetArchitecture: architectureProvider()
             )
         } catch let error as AppUpdateError {
             throw error
@@ -219,7 +302,11 @@ final class AppUpdateService: AppUpdateServicing {
         guard let extractedApplication = findApplication(in: extractionDirectory) else {
             throw AppUpdateError.applicationNotFound
         }
-        try validateApplication(extractedApplication, expectedVersion: release.version)
+        try validateApplication(
+            extractedApplication,
+            expectedVersion: release.version,
+            expectedArchitecture: release.targetArchitecture
+        )
 
         let currentApplicationURL = currentApplicationURLProvider().resolvingSymlinksInPath()
         guard currentApplicationURL.pathExtension.lowercased() == "app",
@@ -296,7 +383,11 @@ final class AppUpdateService: AppUpdateServicing {
         return nil
     }
 
-    private func validateApplication(_ applicationURL: URL, expectedVersion: SemanticVersion) throws {
+    private func validateApplication(
+        _ applicationURL: URL,
+        expectedVersion: SemanticVersion,
+        expectedArchitecture: RuntimeArchitecture
+    ) throws {
         guard let bundle = Bundle(url: applicationURL) else {
             throw AppUpdateError.invalidApplication("无法读取应用包信息")
         }
@@ -307,12 +398,27 @@ final class AppUpdateService: AppUpdateServicing {
               let version = SemanticVersion(versionString), version == expectedVersion else {
             throw AppUpdateError.invalidApplication("版本号与 Release 不匹配")
         }
-        guard let executableName = bundle.object(forInfoDictionaryKey: "CFBundleExecutable") as? String,
-              FileManager.default.isExecutableFile(
-                  atPath: applicationURL.appendingPathComponent("Contents/MacOS/\(executableName)").path
-              ) else {
+        guard let executableName = bundle.object(forInfoDictionaryKey: "CFBundleExecutable") as? String else {
             throw AppUpdateError.invalidApplication("缺少可执行文件")
         }
+
+        let executableURL = applicationURL.appendingPathComponent("Contents/MacOS/\(executableName)")
+        guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
+            throw AppUpdateError.invalidApplication("缺少可执行文件")
+        }
+
+        let detectedArchitecture = RuntimeArchitecture.detect(from: executableURL)
+        guard isArchitectureCompatible(detectedArchitecture, with: expectedArchitecture) else {
+            throw AppUpdateError.invalidApplication("应用架构与当前 Mac 不匹配")
+        }
+    }
+
+    private func isArchitectureCompatible(
+        _ actual: RuntimeArchitecture,
+        with expected: RuntimeArchitecture
+    ) -> Bool {
+        guard expected != .unknown, actual != .unknown else { return true }
+        return actual == expected || actual == .universal
     }
 
     private static func validateHTTPResponse(_ response: URLResponse) throws {

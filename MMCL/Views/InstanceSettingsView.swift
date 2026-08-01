@@ -8,6 +8,8 @@ struct InstanceSettingsView: View {
     @State private var offlineUsername: String
     @State private var memoryMegabytes: Int
     @State private var jvmArgumentsText: String
+    @State private var useGeneratedJVMArguments: Bool
+    @State private var useOptimizingJVMArguments: Bool
 
     init(instance: LauncherInstance, store: LauncherStore) {
         self.instance = instance
@@ -15,6 +17,8 @@ struct InstanceSettingsView: View {
         _offlineUsername = State(initialValue: instance.profile.offlineUsername)
         _memoryMegabytes = State(initialValue: instance.profile.memoryMegabytes)
         _jvmArgumentsText = State(initialValue: instance.profile.jvmArguments.joined(separator: " "))
+        _useGeneratedJVMArguments = State(initialValue: instance.profile.useGeneratedJVMArguments)
+        _useOptimizingJVMArguments = State(initialValue: instance.profile.useOptimizingJVMArguments)
     }
 
     var body: some View {
@@ -125,6 +129,19 @@ struct InstanceSettingsView: View {
                         saveProfile()
                     }
             }
+
+            Toggle("自动生成启动器 JVM 参数", isOn: $useGeneratedJVMArguments)
+                .onChange(of: useGeneratedJVMArguments) { _, _ in
+                    saveProfile()
+                }
+                .help("自动添加编码、Native、日志安全和 macOS 集成参数；不会覆盖上方的自定义参数")
+
+            Toggle("启用 JVM 性能优化", isOn: $useOptimizingJVMArguments)
+                .disabled(!useGeneratedJVMArguments)
+                .onChange(of: useOptimizingJVMArguments) { _, _ in
+                    saveProfile()
+                }
+                .help("添加 G1、JIT 和代码缓存默认值；选择其他 GC 时会自动跳过 G1 参数")
         }
     }
 
@@ -211,7 +228,9 @@ struct InstanceSettingsView: View {
             memoryMegabytes: max(512, memoryMegabytes),
             jvmArguments: args,
             resolutionWidth: instance.profile.resolutionWidth,
-            resolutionHeight: instance.profile.resolutionHeight
+            resolutionHeight: instance.profile.resolutionHeight,
+            useGeneratedJVMArguments: useGeneratedJVMArguments,
+            useOptimizingJVMArguments: useOptimizingJVMArguments
         ))
     }
 

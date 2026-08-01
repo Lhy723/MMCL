@@ -339,8 +339,9 @@ private struct LaunchSettingsTab: View {
                     .textFieldStyle(.roundedBorder)
                     .help("启动游戏前执行的 shell 命令")
 
-                Toggle("使用高性能显卡", isOn: $store.useHighPerformanceGPU)
-                    .help("macOS 会优先使用独立显卡")
+                Text("macOS 优化：启动时优先选择与系统架构匹配的 Java。图形后端由 Minecraft/LWJGL 根据版本自动选择 OpenGL 或 MoltenVK。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 Section("JVM 预设") {
                     ForEach(store.jvmPresets) { preset in

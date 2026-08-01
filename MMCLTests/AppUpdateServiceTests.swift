@@ -34,14 +34,54 @@ final class AppUpdateServiceTests: XCTestCase {
                 headerFields: nil
             )!
             return (Data(Self.releaseJSON.utf8), response)
-        })
+        }, architectureProvider: { .arm64 })
 
         let release = try await service.fetchLatestRelease()
 
         XCTAssertEqual(release.version, SemanticVersion("0.1.1"))
-        XCTAssertEqual(release.automaticAsset?.name, "MMCL-v0.1.1.zip")
-        XCTAssertEqual(release.manualAsset?.name, "MMCL-v0.1.1.dmg")
+        XCTAssertEqual(release.automaticAsset?.name, "MMCL-v0.1.1-arm64.zip")
+        XCTAssertEqual(release.manualAsset?.name, "MMCL-v0.1.1-arm64.dmg")
         XCTAssertEqual(release.notes, "修复更新流程")
+    }
+
+    func testFetchLatestReleaseSelectsIntelAssetOnX86Architecture() async throws {
+        let service = AppUpdateService(dataLoader: { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (Data(Self.releaseJSON.utf8), response)
+        }, architectureProvider: { .x86_64 })
+
+        let release = try await service.fetchLatestRelease()
+
+        XCTAssertEqual(release.targetArchitecture, .x86_64)
+        XCTAssertEqual(release.automaticAsset?.name, "MMCL-v0.1.1-x86_64.zip")
+        XCTAssertEqual(release.manualAsset?.name, "MMCL-v0.1.1-x86_64.dmg")
+    }
+
+    func testReleaseDoesNotSelectTheOppositeArchitecture() {
+        let release = AppUpdateRelease(
+            tagName: "v0.1.1",
+            version: SemanticVersion("0.1.1")!,
+            title: "v0.1.1",
+            notes: "",
+            htmlURL: nil,
+            assets: [
+                AppUpdateAsset(
+                    name: "MMCL-v0.1.1-x86_64.zip",
+                    browserDownloadURL: URL(string: "https://example.com/MMCL-v0.1.1-x86_64.zip")!,
+                    contentType: "application/zip",
+                    size: 1,
+                    digest: nil
+                )
+            ],
+            targetArchitecture: .arm64
+        )
+
+        XCTAssertNil(release.automaticAsset)
     }
 
     func testInstallUpdateValidatesBundleAndSchedulesReplacementAndRestart() async throws {
@@ -167,6 +207,30 @@ final class AppUpdateServiceTests: XCTestCase {
           "browser_download_url": "https://example.com/MMCL-v0.1.1.dmg",
           "content_type": "application/x-apple-diskimage",
           "size": 20
+        },
+        {
+          "name": "MMCL-v0.1.1-arm64.dmg",
+          "browser_download_url": "https://example.com/MMCL-v0.1.1-arm64.dmg",
+          "content_type": "application/x-apple-diskimage",
+          "size": 21
+        },
+        {
+          "name": "MMCL-v0.1.1-x86_64.dmg",
+          "browser_download_url": "https://example.com/MMCL-v0.1.1-x86_64.dmg",
+          "content_type": "application/x-apple-diskimage",
+          "size": 22
+        },
+        {
+          "name": "MMCL-v0.1.1-arm64.zip",
+          "browser_download_url": "https://example.com/MMCL-v0.1.1-arm64.zip",
+          "content_type": "application/zip",
+          "size": 31
+        },
+        {
+          "name": "MMCL-v0.1.1-x86_64.zip",
+          "browser_download_url": "https://example.com/MMCL-v0.1.1-x86_64.zip",
+          "content_type": "application/zip",
+          "size": 32
         },
         {
           "name": "MMCL-v0.1.1.zip",
