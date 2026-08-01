@@ -585,7 +585,7 @@ private struct OtherSettingsTab: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("MMCL")
                             .font(.title2.weight(.semibold))
-                        Text("macOS Minecraft 启动器")
+                        Text("Melody Minecraft Launcher")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }

@@ -1,6 +1,7 @@
 <div align="center">
 <img src="docs/logo.png" width="128" alt="MMCL Logo">
 <h1 align="center">MMCL 🎮</h1>
+<h3>Melody Minecraft Launcher</h3>
 
 <p align="center">
   <a href="https://github.com/Lhy723/MMCL/stargazers"><img src="https://img.shields.io/github/stars/Lhy723/MMCL" alt="Stars"></a>
@@ -63,6 +64,11 @@ macOS 原生 Minecraft 启动器，基于 SwiftUI 构建，参考 PCL 交互设�
 1. 前往 [Releases](https://github.com/Lhy723/MMCL/releases) 下载最新 `.dmg`
 2. 双击打开，拖入 Applications 文件夹
 3. 首次打开可能需要在「系统设置 → 隐私与安全性」中允许
+
+> **Tips**: 如果提示"已损坏，无法打开"，执行以下命令移除隔离属性：
+> ```shell
+> xattr -cr /Applications/MMCL.app
+> ```
 
 ### 方式二：从源码构建
 
