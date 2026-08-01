@@ -734,6 +734,27 @@ struct VersionMetadata: Codable, Equatable {
     var libraries: [Library]
     var arguments: ArgumentSet?
     var minecraftArguments: String?
+
+    func coreLibrary(for loader: GameLoader) -> Library? {
+        let matches: (String) -> Bool
+        switch loader {
+        case .vanilla:
+            return nil
+        case .fabric:
+            matches = { $0.hasPrefix("net.fabricmc:fabric-loader:") }
+        case .quilt:
+            matches = { $0.hasPrefix("org.quiltmc:quilt-loader:") }
+        case .forge:
+            matches = { $0.hasPrefix("net.minecraftforge:forge:") }
+        case .neoForge:
+            matches = {
+                $0.hasPrefix("net.neoforged:neoforge:") ||
+                    $0.hasPrefix("net.neoforged.fancymodloader:loader:") ||
+                    $0.hasPrefix("cpw.mods:bootstraplauncher:")
+            }
+        }
+        return libraries.first { matches($0.name) && $0.artifact != nil }
+    }
 }
 
 struct AssetIndex: Codable, Equatable {
@@ -1000,7 +1021,8 @@ struct DownloadTaskGroup: Identifiable {
 }
 
 struct ModInfo: Identifiable, Equatable {
-    var id: String { fileName }
+    var id: String { fileURL.path }
+    var fileURL: URL
     var fileName: String
     var isEnabled: Bool
     var size: Int64
@@ -1087,6 +1109,40 @@ struct FabricLoaderVersion: Codable, Identifiable, Equatable {
     var id: String { version }
     var version: String
     var stable: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case stable
+        case loader
+    }
+
+    private struct LoaderPayload: Codable, Equatable {
+        var version: String
+        var stable: Bool?
+    }
+
+    init(version: String, stable: Bool) {
+        self.version = version
+        self.stable = stable
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let directVersion = try container.decodeIfPresent(String.self, forKey: .version) {
+            version = directVersion
+            stable = try container.decodeIfPresent(Bool.self, forKey: .stable) ?? !directVersion.contains("-")
+        } else {
+            let payload = try container.decode(LoaderPayload.self, forKey: .loader)
+            version = payload.version
+            stable = payload.stable ?? !payload.version.contains("-")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encode(stable, forKey: .stable)
+    }
 }
 
 struct FabricProfile: Codable, Equatable {
@@ -1094,6 +1150,7 @@ struct FabricProfile: Codable, Equatable {
     var inheritsFrom: String
     var mainClass: String
     var arguments: FabricArguments?
+    var libraries: [LoaderLibrary]?
 
     struct FabricArguments: Codable, Equatable {
         var game: [String]?
@@ -1105,6 +1162,40 @@ struct QuiltLoaderVersion: Codable, Identifiable, Equatable {
     var id: String { version }
     var version: String
     var stable: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case stable
+        case loader
+    }
+
+    private struct LoaderPayload: Codable, Equatable {
+        var version: String
+        var stable: Bool?
+    }
+
+    init(version: String, stable: Bool) {
+        self.version = version
+        self.stable = stable
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let directVersion = try container.decodeIfPresent(String.self, forKey: .version) {
+            version = directVersion
+            stable = try container.decodeIfPresent(Bool.self, forKey: .stable) ?? !directVersion.contains("-")
+        } else {
+            let payload = try container.decode(LoaderPayload.self, forKey: .loader)
+            version = payload.version
+            stable = payload.stable ?? !payload.version.contains("-")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encode(stable, forKey: .stable)
+    }
 }
 
 struct QuiltProfile: Codable, Equatable {
@@ -1117,6 +1208,106 @@ struct QuiltProfile: Codable, Equatable {
         var jvm: [String]?
     }
     var arguments: QuiltArguments?
+    var libraries: [LoaderLibrary]?
+}
+
+struct LoaderLibrary: Codable, Equatable {
+    private struct Hashes: Codable, Equatable {
+        var sha1: String?
+    }
+
+    var name: String
+    var url: URL?
+    var sha1: String?
+    var size: Int64?
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case url
+        case sha1
+        case size
+        case hashes
+    }
+
+    init(
+        name: String,
+        url: URL? = nil,
+        sha1: String? = nil,
+        size: Int64? = nil
+    ) {
+        self.name = name
+        self.url = url
+        self.sha1 = sha1
+        self.size = size
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        url = try container.decodeIfPresent(URL.self, forKey: .url)
+        let directSHA1 = try container.decodeIfPresent(String.self, forKey: .sha1)
+        let hashes = try container.decodeIfPresent(Hashes.self, forKey: .hashes)
+        sha1 = directSHA1 ?? hashes?.sha1
+        size = try container.decodeIfPresent(Int64.self, forKey: .size)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(url, forKey: .url)
+        try container.encodeIfPresent(sha1, forKey: .sha1)
+        try container.encodeIfPresent(size, forKey: .size)
+    }
+
+    func artifact(defaultRepository: URL) -> VersionMetadata.Library.Artifact? {
+        guard let coordinate = MavenCoordinate(name) else { return nil }
+        let repository = url ?? defaultRepository
+        return VersionMetadata.Library.Artifact(
+            path: coordinate.path,
+            url: repository.appendingPathComponent(coordinate.path),
+            sha1: sha1 ?? "",
+            size: size ?? 0
+        )
+    }
+}
+
+struct MavenCoordinate: Equatable {
+    var group: String
+    var artifact: String
+    var version: String
+    var classifier: String?
+    var fileExtension: String
+
+    init?(_ value: String) {
+        let components = value.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        guard components.count >= 3,
+              !components[0].isEmpty,
+              !components[1].isEmpty,
+              !components[2].isEmpty
+        else {
+            return nil
+        }
+
+        var version = components[2]
+        var fileExtension = "jar"
+        if let separator = version.lastIndex(of: "@") {
+            fileExtension = String(version[version.index(after: separator)...])
+            version = String(version[..<separator])
+        }
+        guard !version.isEmpty, !fileExtension.isEmpty else { return nil }
+
+        self.group = components[0]
+        self.artifact = components[1]
+        self.version = version
+        self.classifier = components.count > 3 && !components[3].isEmpty ? components[3] : nil
+        self.fileExtension = fileExtension
+    }
+
+    var path: String {
+        let groupPath = group.replacingOccurrences(of: ".", with: "/")
+        let classifierSuffix = classifier.map { "-\($0)" } ?? ""
+        return "\(groupPath)/\(artifact)/\(version)/\(artifact)-\(version)\(classifierSuffix).\(fileExtension)"
+    }
 }
 
 struct ForgeVersion: Codable, Identifiable, Equatable {

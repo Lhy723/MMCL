@@ -572,25 +572,51 @@ final class LauncherStore: ObservableObject {
             .filter { $0.pathExtension == "jar" || $0.pathExtension == "disabled" }
             .map { url in
                 let isEnabled = url.pathExtension == "jar"
-                let actualURL = isEnabled ? url : url.deletingPathExtension()
-                let size = (try? actualURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                let name = actualURL.lastPathComponent
-                return ModInfo(fileName: name, isEnabled: isEnabled, size: Int64(size))
+                let displayURL = isEnabled ? url : url.deletingPathExtension()
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                return ModInfo(
+                    fileURL: url,
+                    fileName: displayURL.lastPathComponent,
+                    isEnabled: isEnabled,
+                    size: Int64(size)
+                )
             }
             .sorted { $0.fileName < $1.fileName }
     }
 
     func toggleMod(for instance: LauncherInstance, mod: ModInfo) {
-        let modsDir = instance.rootDirectory.appendingPathComponent("mods", isDirectory: true)
-        let currentURL = modsDir.appendingPathComponent(mod.fileName + (mod.isEnabled ? ".jar" : ".jar.disabled"))
-        let newURL = modsDir.appendingPathComponent(mod.fileName + (mod.isEnabled ? ".jar.disabled" : ".jar"))
-        try? FileManager.default.moveItem(at: currentURL, to: newURL)
+        let newURL = mod.isEnabled
+            ? mod.fileURL.appendingPathExtension("disabled")
+            : mod.fileURL.deletingPathExtension()
+        do {
+            try FileManager.default.moveItem(at: mod.fileURL, to: newURL)
+        } catch {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "Mod 操作失败",
+                    severity: .error,
+                    summary: "无法\(mod.isEnabled ? "禁用" : "启用") \(mod.fileName)：\(error.localizedDescription)",
+                    suggestedActions: ["检查 mods 目录权限", "刷新 Mod 列表"]
+                ),
+                at: 0
+            )
+        }
     }
 
     func deleteMod(for instance: LauncherInstance, mod: ModInfo) {
-        let modsDir = instance.rootDirectory.appendingPathComponent("mods", isDirectory: true)
-        let fileName = mod.fileName + (mod.isEnabled ? ".jar" : ".jar.disabled")
-        try? FileManager.default.removeItem(at: modsDir.appendingPathComponent(fileName))
+        do {
+            try FileManager.default.removeItem(at: mod.fileURL)
+        } catch {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "Mod 删除失败",
+                    severity: .error,
+                    summary: "无法删除 \(mod.fileName)：\(error.localizedDescription)",
+                    suggestedActions: ["检查 mods 目录权限", "手动删除文件"]
+                ),
+                at: 0
+            )
+        }
     }
 
     func scanResourcePacks(for instance: LauncherInstance) -> [ResourcePackInfo] {
@@ -1017,17 +1043,50 @@ extension LauncherStore {
                 source: selectedDownloadSource
             )
             downloadJobs = jobs
-            updateInstanceStatus(selectedInstance.id, status: jobs.isEmpty ? .ready : .missingFiles)
+            var validationError: Error?
+            var installationIsComplete = false
+            if jobs.isEmpty {
+                do {
+                    try downloadService.validateLoaderInstallation(metadata: metadata, instance: launchInstance)
+                    installationIsComplete = true
+                    updateInstanceStatus(selectedInstance.id, status: .ready)
+                } catch {
+                    validationError = error
+                    updateInstanceStatus(selectedInstance.id, status: .missingFiles)
+                }
+            } else {
+                updateInstanceStatus(selectedInstance.id, status: .missingFiles)
+            }
+            let title: String
+            let severity: DiagnosticSeverity
+            let summary: String
+            let suggestedActions: [String]
+            if let validationError {
+                title = "实例仍需修复"
+                severity = .error
+                summary = "\(selectedInstance.name) 的文件下载检查通过，但加载器安装校验失败：\(validationError.localizedDescription)"
+                suggestedActions = ["重新生成加载器安装计划", "完成依赖下载后再准备 Native"]
+            } else if installationIsComplete {
+                title = "实例文件已完整"
+                severity = .info
+                summary = "\(selectedInstance.name) 的核心文件和加载器核心 JAR 均已验证。"
+                suggestedActions = ["准备 Native 后启动"]
+            } else {
+                title = "已生成修复任务"
+                severity = .warning
+                summary = "已为 \(selectedInstance.name) 生成 \(jobs.count) 个缺失文件下载任务。"
+                suggestedActions = ["打开下载中心执行修复任务", "下载完成后准备 Native"]
+            }
             diagnostics.insert(
                 DiagnosticReport(
-                    title: jobs.isEmpty ? "实例文件已完整" : "已生成修复任务",
-                    severity: jobs.isEmpty ? .info : .warning,
-                    summary: jobs.isEmpty ? "\(selectedInstance.name) 没有发现需要重新下载的核心文件。" : "已为 \(selectedInstance.name) 生成 \(jobs.count) 个缺失文件下载任务。",
-                    suggestedActions: jobs.isEmpty ? ["准备 Native 后启动"] : ["打开下载中心执行修复任务", "下载完成后准备 Native"]
+                    title: title,
+                    severity: severity,
+                    summary: summary,
+                    suggestedActions: suggestedActions
                 ),
                 at: 0
             )
-            selectedSection = jobs.isEmpty ? .launcher : .downloads
+            selectedSection = installationIsComplete ? .launcher : .downloads
         } catch {
             diagnostics.insert(
                 DiagnosticReport(
@@ -1236,10 +1295,10 @@ extension LauncherStore {
             updateInstanceStatus(instance.id, status: .missingFiles)
             diagnostics.insert(
                 DiagnosticReport(
-                    title: "Fabric loader 已安装",
+                    title: "Fabric loader 安装计划已生成",
                     severity: .info,
-                    summary: "已为 \(instance.name) 安装 Fabric loader，生成 \(jobs.count) 个下载任务。",
-                    suggestedActions: ["打开下载中心执行任务", "下载完成后启动游戏"]
+                    summary: "已为 \(instance.name) 生成 Fabric loader 及其依赖的 \(jobs.count) 个下载任务；下载并验证核心 JAR 后才算安装完成。",
+                    suggestedActions: ["打开下载中心执行任务", "下载完成后准备 Native"]
                 ),
                 at: 0
             )
@@ -1266,7 +1325,7 @@ extension LauncherStore {
             let jobs = downloadService.makeVanillaInstallJobs(metadata: metadata, instance: launchInstance, source: selectedDownloadSource)
             downloadJobs = jobs
             updateInstanceStatus(instance.id, status: .missingFiles)
-            diagnostics.insert(DiagnosticReport(title: "Quilt loader 已安装", severity: .info, summary: "已为 \(instance.name) 安装 Quilt loader，生成 \(jobs.count) 个下载任务。", suggestedActions: ["打开下载中心执行任务"]), at: 0)
+            diagnostics.insert(DiagnosticReport(title: "Quilt loader 安装计划已生成", severity: .info, summary: "已为 \(instance.name) 生成 Quilt loader 及其依赖的 \(jobs.count) 个下载任务；下载并验证核心 JAR 后才算安装完成。", suggestedActions: ["打开下载中心执行任务", "下载完成后准备 Native"]), at: 0)
             selectedSection = .downloads
         } catch {
             diagnostics.insert(DiagnosticReport(title: "Quilt loader 安装失败", severity: .error, summary: error.localizedDescription, suggestedActions: ["确认已安装基础版本", "检查网络连接"]), at: 0)
@@ -1282,7 +1341,7 @@ extension LauncherStore {
             let jobs = downloadService.makeVanillaInstallJobs(metadata: metadata, instance: launchInstance, source: selectedDownloadSource)
             downloadJobs = jobs
             updateInstanceStatus(instance.id, status: .missingFiles)
-            diagnostics.insert(DiagnosticReport(title: "Forge 已安装", severity: .info, summary: "已为 \(instance.name) 安装 Forge，生成 \(jobs.count) 个下载任务。", suggestedActions: ["打开下载中心执行任务"]), at: 0)
+            diagnostics.insert(DiagnosticReport(title: "Forge 安装计划已生成", severity: .info, summary: "已为 \(instance.name) 从官方 installer 读取 Forge metadata，并生成包含 loader 依赖的 \(jobs.count) 个下载任务；下载并验证核心 JAR 后才算安装完成。", suggestedActions: ["打开下载中心执行任务", "下载完成后准备 Native"]), at: 0)
             selectedSection = .downloads
         } catch {
             diagnostics.insert(DiagnosticReport(title: "Forge 安装失败", severity: .error, summary: error.localizedDescription, suggestedActions: ["确认已安装基础版本", "检查网络连接"]), at: 0)
@@ -1298,7 +1357,7 @@ extension LauncherStore {
             let jobs = downloadService.makeVanillaInstallJobs(metadata: metadata, instance: launchInstance, source: selectedDownloadSource)
             downloadJobs = jobs
             updateInstanceStatus(instance.id, status: .missingFiles)
-            diagnostics.insert(DiagnosticReport(title: "NeoForge 已安装", severity: .info, summary: "已为 \(instance.name) 安装 NeoForge，生成 \(jobs.count) 个下载任务。", suggestedActions: ["打开下载中心执行任务"]), at: 0)
+            diagnostics.insert(DiagnosticReport(title: "NeoForge 安装计划已生成", severity: .info, summary: "已为 \(instance.name) 从官方 installer 读取 NeoForge metadata，并生成包含 loader 依赖的 \(jobs.count) 个下载任务；下载并验证核心 JAR 后才算安装完成。", suggestedActions: ["打开下载中心执行任务", "下载完成后准备 Native"]), at: 0)
             selectedSection = .downloads
         } catch {
             diagnostics.insert(DiagnosticReport(title: "NeoForge 安装失败", severity: .error, summary: error.localizedDescription, suggestedActions: ["确认已安装基础版本", "检查网络连接"]), at: 0)
@@ -1852,6 +1911,7 @@ extension LauncherStore {
         }
 
         do {
+            try downloadService.validateLoaderInstallation(metadata: metadata, instance: instance)
             let archives = try downloadService.prepareNativeLibraries(
                 metadata: metadata,
                 instance: instance
@@ -1952,6 +2012,7 @@ extension LauncherStore {
 
         let launchInstance = instanceForVersionMetadata(plannedVersionMetadata, instance: instance)
         do {
+            try downloadService.validateLoaderInstallation(metadata: plannedVersionMetadata, instance: launchInstance)
             let archives = try downloadService.prepareNativeLibraries(
                 metadata: plannedVersionMetadata,
                 instance: launchInstance

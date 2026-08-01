@@ -321,6 +321,57 @@ final class LauncherStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testModOperationsUseScannedFileURLs() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MMCL-mods-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let modsDirectory = root.appendingPathComponent("mods", isDirectory: true)
+        try FileManager.default.createDirectory(at: modsDirectory, withIntermediateDirectories: true)
+        let enabledURL = modsDirectory.appendingPathComponent("sodium.jar")
+        let disabledURL = modsDirectory.appendingPathComponent("lithium.jar.disabled")
+        let enabledData = Data("enabled-mod".utf8)
+        let disabledData = Data("disabled-mod".utf8)
+        try enabledData.write(to: enabledURL)
+        try disabledData.write(to: disabledURL)
+
+        let instance = LauncherInstance(
+            name: "Mod 文件操作测试",
+            gameVersion: "1.21.5",
+            loader: .fabric,
+            rootDirectory: root
+        )
+        let store = LauncherStore(
+            instances: [instance],
+            downloadJobs: [],
+            featuredProjects: [],
+            diagnostics: [],
+            javaRuntimes: [],
+            availableVersions: []
+        )
+
+        let scannedMods = store.scanInstalledMods(for: instance)
+        let enabledMod = try XCTUnwrap(scannedMods.first { $0.fileName == "sodium.jar" })
+        let disabledMod = try XCTUnwrap(scannedMods.first { $0.fileName == "lithium.jar" })
+        XCTAssertEqual(enabledMod.fileURL.resolvingSymlinksInPath(), enabledURL.resolvingSymlinksInPath())
+        XCTAssertEqual(disabledMod.fileURL.resolvingSymlinksInPath(), disabledURL.resolvingSymlinksInPath())
+        XCTAssertEqual(enabledMod.size, Int64(enabledData.count))
+        XCTAssertEqual(disabledMod.size, Int64(disabledData.count))
+
+        store.toggleMod(for: instance, mod: enabledMod)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: enabledURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: enabledURL.appendingPathExtension("disabled").path))
+
+        let reenabledMod = try XCTUnwrap(store.scanInstalledMods(for: instance).first { $0.fileName == "sodium.jar" })
+        store.toggleMod(for: instance, mod: reenabledMod)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: enabledURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: enabledURL.appendingPathExtension("disabled").path))
+
+        store.deleteMod(for: instance, mod: disabledMod)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: disabledURL.path))
+    }
+
+    @MainActor
     func testStoreBlocksLaunchWhenPreflightFails() async {
         let instanceID = UUID()
         let instance = LauncherInstance(
@@ -496,6 +547,26 @@ final class LauncherStoreTests: XCTestCase {
         )
         var metadata = try VersionManifestService().decodeVersionMetadata(from: Data(Self.versionMetadataJSON.utf8))
         metadata.id = launchVersionID
+        metadata.mainClass = "net.fabricmc.loader.impl.launch.knot.KnotClient"
+        metadata.libraries.append(
+            VersionMetadata.Library(
+                name: "net.fabricmc:fabric-loader:0.16.14",
+                downloads: VersionMetadata.Library.Downloads(
+                    artifact: VersionMetadata.Library.Artifact(
+                        path: "net/fabricmc/fabric-loader/0.16.14/fabric-loader-0.16.14.jar",
+                        url: URL(string: "https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.16.14/fabric-loader-0.16.14.jar")!,
+                        sha1: "loader-sha1",
+                        size: 1
+                    ),
+                    classifiers: nil
+                )
+            )
+        )
+        let coreLibrary = root.appendingPathComponent(
+            ".minecraft/libraries/net/fabricmc/fabric-loader/0.16.14/fabric-loader-0.16.14.jar"
+        )
+        try FileManager.default.createDirectory(at: coreLibrary.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("loader".utf8).write(to: coreLibrary)
         let nativeArchive = root
             .appendingPathComponent(".minecraft/libraries/org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3-natives-macos.jar")
         try FileManager.default.createDirectory(

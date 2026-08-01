@@ -263,6 +263,7 @@ protocol DownloadServicing: AnyObject {
         taskGroupName: String?
     ) -> [DownloadJob]
     func prepareNativeLibraries(metadata: VersionMetadata, instance: LauncherInstance) throws -> [URL]
+    func validateLoaderInstallation(metadata: VersionMetadata, instance: LauncherInstance) throws
     func startDownload(_ job: DownloadJob)
     func pauseDownload(id: UUID)
     func resumeDownload(id: UUID)
@@ -488,6 +489,9 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
 
         let libraryJobs = metadata.libraries.compactMap { library -> DownloadJob? in
             guard let artifact = library.artifact else { return nil }
+            guard artifact.url != generatedLoaderArtifactURL,
+                  !artifact.url.absoluteString.isEmpty
+            else { return nil }
             return DownloadJob(
                 title: library.name,
                 source: source,
@@ -495,7 +499,7 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
                 destination: minecraftDirectory
                     .appendingPathComponent("libraries", isDirectory: true)
                     .appendingPathComponent(artifact.path),
-                sha1: artifact.sha1,
+                sha1: artifact.sha1.isEmpty ? nil : artifact.sha1,
                 totalBytes: artifact.size,
                 taskGroupID: groupID,
                 taskGroupName: groupName
@@ -505,6 +509,9 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
         jobs.append(contentsOf: libraryJobs)
         let nativeJobs = metadata.libraries.compactMap { library -> DownloadJob? in
             guard let artifact = library.nativeArtifact() else { return nil }
+            guard artifact.url != generatedLoaderArtifactURL,
+                  !artifact.url.absoluteString.isEmpty
+            else { return nil }
             return DownloadJob(
                 title: "\(library.name) native",
                 source: source,
@@ -512,7 +519,7 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
                 destination: minecraftDirectory
                     .appendingPathComponent("libraries", isDirectory: true)
                     .appendingPathComponent(artifact.path),
-                sha1: artifact.sha1,
+                sha1: artifact.sha1.isEmpty ? nil : artifact.sha1,
                 totalBytes: artifact.size,
                 taskGroupID: groupID,
                 taskGroupName: groupName
@@ -593,6 +600,25 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
             try Self.unzip(archiveURL: archiveURL, destination: nativesDirectory)
             return archiveURL
         }
+    }
+
+    func validateLoaderInstallation(metadata: VersionMetadata, instance: LauncherInstance) throws {
+        try validateLoaderMetadata(metadata, loader: instance.loader)
+        guard instance.loader != .vanilla else { return }
+        guard let artifact = metadata.coreLibrary(for: instance.loader)?.artifact else {
+            throw LoaderInstallationError.missingCoreLibraryMetadata(instance.loader)
+        }
+        let coreLibraryURL = instance.rootDirectory
+            .appendingPathComponent(".minecraft", isDirectory: true)
+            .appendingPathComponent("libraries", isDirectory: true)
+            .appendingPathComponent(artifact.path)
+        guard FileManager.default.fileExists(atPath: coreLibraryURL.path) else {
+            throw LoaderInstallationError.missingCoreLibraryFile(coreLibraryURL)
+        }
+        try validateGeneratedLoaderArtifacts(
+            metadata.libraries,
+            minecraftDirectory: instance.rootDirectory.appendingPathComponent(".minecraft", isDirectory: true)
+        )
     }
 
     private static func unzip(archiveURL: URL, destination: URL) throws {
@@ -1210,6 +1236,13 @@ struct LaunchService: LaunchServicing {
             )
         }
 
+        do {
+            try validateLoaderMetadata(metadata, loader: instance.loader)
+        } catch {
+            blockingIssues.append(error.localizedDescription)
+            actions.append("重新生成加载器安装计划")
+        }
+
         let clientJar = versionDirectory.appendingPathComponent("\(launchVersionID).jar")
         if !fileManager.fileExists(atPath: clientJar.path) {
             blockingIssues.append("缺少 client jar：\(clientJar.path)")
@@ -1317,6 +1350,8 @@ struct LaunchService: LaunchServicing {
             "game_directory": minecraftDirectory.path,
             "assets_root": minecraftDirectory.appendingPathComponent("assets", isDirectory: true).path,
             "assets_index_name": assetIndex,
+            "library_directory": minecraftDirectory.appendingPathComponent("libraries", isDirectory: true).path,
+            "classpath_separator": ":",
             "auth_uuid": isMicrosoftAccount ? account.uuid : "00000000000000000000000000000000",
             "auth_access_token": isMicrosoftAccount ? account.accessToken : "0",
             "clientid": "",
@@ -1515,6 +1550,329 @@ enum ModrinthError: LocalizedError, Equatable {
     }
 }
 
+private let generatedLoaderArtifactURL = URL(string: "mmcl-generated://artifact")!
+
+private struct InstallerVersionArtifact: Decodable {
+    var path: String
+    var url: URL
+    var sha1: String
+    var size: Int64
+
+    private enum CodingKeys: String, CodingKey {
+        case path
+        case url
+        case sha1
+        case size
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        path = try container.decode(String.self, forKey: .path)
+        let urlString = try container.decodeIfPresent(String.self, forKey: .url) ?? ""
+        url = URL(string: urlString) ?? generatedLoaderArtifactURL
+        sha1 = try container.decodeIfPresent(String.self, forKey: .sha1) ?? ""
+        size = try container.decodeIfPresent(Int64.self, forKey: .size) ?? 0
+    }
+}
+
+private struct InstallerVersionLibrary: Decodable {
+    struct Downloads: Decodable {
+        var artifact: InstallerVersionArtifact?
+        var classifiers: [String: InstallerVersionArtifact]?
+    }
+
+    var name: String
+    var natives: [String: String]?
+    var downloads: Downloads?
+
+    var metadata: VersionMetadata.Library {
+        VersionMetadata.Library(
+            name: name,
+            natives: natives,
+            downloads: downloads.map {
+                VersionMetadata.Library.Downloads(
+                    artifact: $0.artifact.map {
+                        VersionMetadata.Library.Artifact(
+                            path: $0.path,
+                            url: $0.url,
+                            sha1: $0.sha1,
+                            size: $0.size
+                        )
+                    },
+                    classifiers: $0.classifiers?.mapValues {
+                        VersionMetadata.Library.Artifact(
+                            path: $0.path,
+                            url: $0.url,
+                            sha1: $0.sha1,
+                            size: $0.size
+                        )
+                    }
+                )
+            }
+        )
+    }
+}
+
+struct InstallerVersionProfile: Decodable {
+    var id: String?
+    var inheritsFrom: String?
+    var mainClass: String?
+    var libraries: [VersionMetadata.Library]?
+    var arguments: VersionMetadata.ArgumentSet?
+    var minecraftArguments: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case inheritsFrom
+        case mainClass
+        case libraries
+        case arguments
+        case minecraftArguments
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id)
+        inheritsFrom = try container.decodeIfPresent(String.self, forKey: .inheritsFrom)
+        mainClass = try container.decodeIfPresent(String.self, forKey: .mainClass)
+        libraries = try container.decodeIfPresent([InstallerVersionLibrary].self, forKey: .libraries)?.map { $0.metadata }
+        arguments = try container.decodeIfPresent(VersionMetadata.ArgumentSet.self, forKey: .arguments)
+        minecraftArguments = try container.decodeIfPresent(String.self, forKey: .minecraftArguments)
+    }
+}
+
+enum LoaderInstallationError: LocalizedError, Equatable {
+    case invalidMainClass
+    case missingCoreLibraryMetadata(GameLoader)
+    case missingCoreLibraryFile(URL)
+    case missingGeneratedLibraryFile(URL)
+    case invalidInstallerProfile(String)
+    case installerExecutionFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidMainClass:
+            return "加载器 metadata 缺少有效的 mainClass。"
+        case .missingCoreLibraryMetadata(let loader):
+            return "加载器 metadata 缺少 \(loader.rawValue) 核心 JAR 信息。"
+        case .missingCoreLibraryFile(let url):
+            return "缺少加载器核心 JAR：\(url.path)"
+        case .missingGeneratedLibraryFile(let url):
+            return "缺少 processor 生成的加载器 JAR：\(url.path)"
+        case .invalidInstallerProfile(let detail):
+            return "加载器 installer metadata 无效：\(detail)"
+        case .installerExecutionFailed(let detail):
+            return "加载器 installer 执行失败：" + detail
+        }
+    }
+}
+
+private func validateLoaderMetadata(_ metadata: VersionMetadata, loader: GameLoader) throws {
+    guard !metadata.mainClass.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        throw LoaderInstallationError.invalidMainClass
+    }
+    guard loader == .vanilla || metadata.coreLibrary(for: loader) != nil else {
+        throw LoaderInstallationError.missingCoreLibraryMetadata(loader)
+    }
+}
+
+private func validateGeneratedLoaderArtifacts(
+    _ libraries: [VersionMetadata.Library],
+    minecraftDirectory: URL
+) throws {
+    for library in libraries {
+        guard let artifact = library.artifact,
+              artifact.url == generatedLoaderArtifactURL
+        else { continue }
+        let artifactURL = minecraftDirectory
+            .appendingPathComponent("libraries", isDirectory: true)
+            .appendingPathComponent(artifact.path)
+        guard FileManager.default.fileExists(atPath: artifactURL.path) else {
+            throw LoaderInstallationError.missingGeneratedLibraryFile(artifactURL)
+        }
+    }
+}
+
+private enum LoaderMetadataBuilder {
+    static func argumentSet(game: [String]?, jvm: [String]?) -> VersionMetadata.ArgumentSet? {
+        guard game != nil || jvm != nil else { return nil }
+        return VersionMetadata.ArgumentSet(
+            game: game?.map { VersionMetadata.LaunchArgument(value: .string($0)) } ?? [],
+            jvm: jvm?.map { VersionMetadata.LaunchArgument(value: .string($0)) } ?? []
+        )
+    }
+
+    static func mergeArguments(
+        base: VersionMetadata.ArgumentSet?,
+        overlay: VersionMetadata.ArgumentSet?
+    ) -> VersionMetadata.ArgumentSet? {
+        guard base != nil || overlay != nil else { return nil }
+        return VersionMetadata.ArgumentSet(
+            game: (base?.game ?? []) + (overlay?.game ?? []),
+            jvm: (base?.jvm ?? []) + (overlay?.jvm ?? [])
+        )
+    }
+
+    static func mergeLibraries(
+        base: [VersionMetadata.Library],
+        overlay: [VersionMetadata.Library]
+    ) -> [VersionMetadata.Library] {
+        var result = base
+        for library in overlay {
+            if let index = result.firstIndex(where: { $0.name == library.name }) {
+                result[index] = library
+            } else {
+                result.append(library)
+            }
+        }
+        return result
+    }
+
+    static func convert(
+        _ libraries: [LoaderLibrary],
+        defaultRepository: URL
+    ) throws -> [VersionMetadata.Library] {
+        try libraries.map { library in
+            guard let artifact = library.artifact(defaultRepository: defaultRepository) else {
+                throw LoaderInstallationError.invalidInstallerProfile("无法解析 Maven 坐标：\(library.name)")
+            }
+            return VersionMetadata.Library(
+                name: library.name,
+                downloads: VersionMetadata.Library.Downloads(artifact: artifact, classifiers: nil)
+            )
+        }
+    }
+
+    static func build(
+        base: VersionMetadata,
+        id: String,
+        mainClass: String,
+        loader: GameLoader,
+        libraries: [VersionMetadata.Library],
+        arguments: VersionMetadata.ArgumentSet?,
+        minecraftArguments: String? = nil
+    ) throws -> VersionMetadata {
+        var metadata = base
+        metadata.id = id
+        metadata.mainClass = mainClass
+        metadata.libraries = mergeLibraries(base: base.libraries, overlay: libraries)
+        metadata.arguments = mergeArguments(base: base.arguments, overlay: arguments)
+        if let minecraftArguments {
+            metadata.minecraftArguments = minecraftArguments
+        }
+        try validateLoaderMetadata(metadata, loader: loader)
+        return metadata
+    }
+}
+
+private func loadLoaderData(from url: URL) async throws -> Data {
+    if url.isFileURL {
+        return try Data(contentsOf: url)
+    }
+    let (data, response) = try await URLSession.shared.data(from: url)
+    if let response = response as? HTTPURLResponse,
+       !(200..<300).contains(response.statusCode) {
+        throw LoaderInstallationError.invalidInstallerProfile("HTTP \(response.statusCode)：\(url.absoluteString)")
+    }
+    return data
+}
+
+private enum LoaderInstallerArchive {
+    static func prepareClientProfile(
+        from installerURL: URL,
+        minecraftDirectory: URL,
+        javaExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/java")
+    ) async throws -> InstallerVersionProfile {
+        let installerFile = try await downloadToTemporaryFile(from: installerURL)
+        defer { try? FileManager.default.removeItem(at: installerFile) }
+        let profile = try decodeVersionProfile(from: installerFile)
+        let hasGeneratedArtifacts = profile.libraries?.contains(where: {
+            guard let artifact = $0.artifact else { return false }
+            return artifact.url == generatedLoaderArtifactURL || artifact.url.absoluteString.isEmpty
+        }) == true
+        if hasGeneratedArtifacts {
+            try runClientInstaller(
+                at: installerFile,
+                minecraftDirectory: minecraftDirectory,
+                javaExecutableURL: javaExecutableURL
+            )
+            try validateGeneratedLoaderArtifacts(
+                profile.libraries ?? [],
+                minecraftDirectory: minecraftDirectory
+            )
+        }
+        return profile
+    }
+
+    private static func decodeVersionProfile(from installerFile: URL) throws -> InstallerVersionProfile {
+        let versionData: Data
+        do {
+            versionData = try extract(entry: "version.json", from: installerFile)
+        } catch {
+            let profileData = try extract(entry: "install_profile.json", from: installerFile)
+            let profileObject = try JSONSerialization.jsonObject(with: profileData) as? [String: Any]
+            guard let jsonPath = profileObject?["json"] as? String else {
+                throw LoaderInstallationError.invalidInstallerProfile("找不到 version.json 或 install_profile.json 的 json 路径")
+            }
+            versionData = try extract(entry: jsonPath.trimmingCharacters(in: CharacterSet(charactersIn: "/")), from: installerFile)
+        }
+
+        do {
+            return try JSONDecoder.mmcl.decode(InstallerVersionProfile.self, from: versionData)
+        } catch {
+            throw LoaderInstallationError.invalidInstallerProfile(error.localizedDescription)
+        }
+    }
+
+    private static func runClientInstaller(
+        at installerFile: URL,
+        minecraftDirectory: URL,
+        javaExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/java")
+    ) throws {
+        try FileManager.default.createDirectory(at: minecraftDirectory, withIntermediateDirectories: true)
+
+        let process = Process()
+        process.executableURL = javaExecutableURL
+        process.arguments = ["-jar", installerFile.path, "--installClient", minecraftDirectory.path]
+        process.currentDirectoryURL = minecraftDirectory
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            throw LoaderInstallationError.installerExecutionFailed(error.localizedDescription)
+        }
+        guard process.terminationStatus == 0 else {
+            throw LoaderInstallationError.installerExecutionFailed("退出码 " + String(process.terminationStatus))
+        }
+    }
+
+    private static func downloadToTemporaryFile(from installerURL: URL) async throws -> URL {
+        let installerData = try await loadLoaderData(from: installerURL)
+        let installerFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MMCL-\(UUID().uuidString).jar")
+        try installerData.write(to: installerFile, options: .atomic)
+        return installerFile
+    }
+
+    private static func extract(entry: String, from archive: URL) throws -> Data {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        process.arguments = ["-p", archive.path, entry]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = Pipe()
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw LoaderInstallationError.invalidInstallerProfile("installer 缺少 " + entry)
+        }
+        return data
+    }
+}
+
 protocol FabricServicing {
     func fetchLoaderVersions(gameVersion: String) async throws -> [FabricLoaderVersion]
     func fetchProfile(gameVersion: String, loaderVersion: String) async throws -> FabricProfile
@@ -1526,17 +1884,26 @@ protocol FabricServicing {
 }
 
 struct FabricService: FabricServicing {
-    let baseURL = URL(string: "https://meta.fabricmc.net/v2")!
+    let baseURL: URL
+    let mavenBaseURL: URL
+
+    init(
+        baseURL: URL = URL(string: "https://meta.fabricmc.net/v2")!,
+        mavenBaseURL: URL = URL(string: "https://maven.fabricmc.net/")!
+    ) {
+        self.baseURL = baseURL
+        self.mavenBaseURL = mavenBaseURL
+    }
 
     func fetchLoaderVersions(gameVersion: String) async throws -> [FabricLoaderVersion] {
         let url = baseURL.appendingPathComponent("versions/loader/\(gameVersion)")
-        let (data, _) = try await URLSession.shared.data(from: url)
+        let data = try await loadLoaderData(from: url)
         return try JSONDecoder.mmcl.decode([FabricLoaderVersion].self, from: data)
     }
 
     func fetchProfile(gameVersion: String, loaderVersion: String) async throws -> FabricProfile {
-        let url = baseURL.appendingPathComponent("versions/loader/\(gameVersion)/\(loaderVersion)/profile")
-        let (data, _) = try await URLSession.shared.data(from: url)
+        let url = baseURL.appendingPathComponent("versions/loader/\(gameVersion)/\(loaderVersion)/profile/json")
+        let data = try await loadLoaderData(from: url)
         return try JSONDecoder.mmcl.decode(FabricProfile.self, from: data)
     }
 
@@ -1545,12 +1912,12 @@ struct FabricService: FabricServicing {
         loaderVersion: String? = nil,
         instance: LauncherInstance
     ) async throws -> VersionMetadata {
-        // 1. Determine loader version
-        let versions = try await fetchLoaderVersions(gameVersion: gameVersion)
         let selectedVersion: String
         if let explicit = loaderVersion {
             selectedVersion = explicit
         } else {
+            // 1. Determine the latest loader version only when needed.
+            let versions = try await fetchLoaderVersions(gameVersion: gameVersion)
             guard let latest = versions.first(where: { $0.stable }) ?? versions.first else {
                 throw FabricInstallError.noLoaderAvailable(gameVersion)
             }
@@ -1560,20 +1927,23 @@ struct FabricService: FabricServicing {
         // 2. Fetch Fabric profile
         let profile = try await fetchProfile(gameVersion: gameVersion, loaderVersion: selectedVersion)
 
-        // 3. Build a minimal VersionMetadata from the profile
+        // 3. Merge the complete profile into the base Minecraft metadata.
         let baseMetadata = try readBaseMetadata(instance: instance, gameVersion: profile.inheritsFrom)
-
-        let fabricLibraries = baseMetadata.libraries + [
-            VersionMetadata.Library(
-                name: "net.fabricmc:intermediary:\(profile.inheritsFrom):v2",
-                downloads: nil
+        let profileLibraries = try LoaderMetadataBuilder.convert(
+            profile.libraries ?? [],
+            defaultRepository: mavenBaseURL
+        )
+        let metadata = try LoaderMetadataBuilder.build(
+            base: baseMetadata,
+            id: "\(profile.inheritsFrom)-fabric-\(selectedVersion)",
+            mainClass: profile.mainClass,
+            loader: .fabric,
+            libraries: profileLibraries,
+            arguments: LoaderMetadataBuilder.argumentSet(
+                game: profile.arguments?.game,
+                jvm: profile.arguments?.jvm
             )
-        ]
-
-        var metadata = baseMetadata
-        metadata.id = "\(profile.inheritsFrom)-fabric-\(selectedVersion)"
-        metadata.mainClass = profile.mainClass
-        metadata.libraries = fabricLibraries
+        )
 
         // 4. Write version JSON
         let versionDir = instance.rootDirectory
@@ -1621,26 +1991,35 @@ protocol QuiltServicing {
 }
 
 struct QuiltService: QuiltServicing {
-    let baseURL = URL(string: "https://meta.quiltmc.org/v3")!
+    let baseURL: URL
+    let mavenBaseURL: URL
+
+    init(
+        baseURL: URL = URL(string: "https://meta.quiltmc.org/v3")!,
+        mavenBaseURL: URL = URL(string: "https://maven.quiltmc.org/repository/release/")!
+    ) {
+        self.baseURL = baseURL
+        self.mavenBaseURL = mavenBaseURL
+    }
 
     func fetchLoaderVersions(gameVersion: String) async throws -> [QuiltLoaderVersion] {
         let url = baseURL.appendingPathComponent("versions/loader/\(gameVersion)")
-        let (data, _) = try await URLSession.shared.data(from: url)
+        let data = try await loadLoaderData(from: url)
         return try JSONDecoder.mmcl.decode([QuiltLoaderVersion].self, from: data)
     }
 
     func fetchProfile(gameVersion: String, loaderVersion: String) async throws -> QuiltProfile {
-        let url = baseURL.appendingPathComponent("versions/loader/\(gameVersion)/\(loaderVersion)/profile")
-        let (data, _) = try await URLSession.shared.data(from: url)
+        let url = baseURL.appendingPathComponent("versions/loader/\(gameVersion)/\(loaderVersion)/profile/json")
+        let data = try await loadLoaderData(from: url)
         return try JSONDecoder.mmcl.decode(QuiltProfile.self, from: data)
     }
 
     func installQuilt(gameVersion: String, loaderVersion: String? = nil, instance: LauncherInstance) async throws -> VersionMetadata {
-        let versions = try await fetchLoaderVersions(gameVersion: gameVersion)
         let selectedVersion: String
         if let explicit = loaderVersion {
             selectedVersion = explicit
         } else {
+            let versions = try await fetchLoaderVersions(gameVersion: gameVersion)
             guard let latest = versions.first(where: { $0.stable }) ?? versions.first else {
                 throw QuiltInstallError.noLoaderAvailable(gameVersion)
             }
@@ -1650,9 +2029,21 @@ struct QuiltService: QuiltServicing {
         let profile = try await fetchProfile(gameVersion: gameVersion, loaderVersion: selectedVersion)
         let baseMetadata = try readBaseMetadata(instance: instance, gameVersion: profile.inheritsFrom)
 
-        var metadata = baseMetadata
-        metadata.id = "\(profile.inheritsFrom)-quilt-\(selectedVersion)"
-        metadata.mainClass = profile.mainClass
+        let profileLibraries = try LoaderMetadataBuilder.convert(
+            profile.libraries ?? [],
+            defaultRepository: mavenBaseURL
+        )
+        let metadata = try LoaderMetadataBuilder.build(
+            base: baseMetadata,
+            id: "\(profile.inheritsFrom)-quilt-\(selectedVersion)",
+            mainClass: profile.mainClass,
+            loader: .quilt,
+            libraries: profileLibraries,
+            arguments: LoaderMetadataBuilder.argumentSet(
+                game: profile.arguments?.game,
+                jvm: profile.arguments?.jvm
+            )
+        )
 
         let versionDir = instance.rootDirectory
             .appendingPathComponent(".minecraft", isDirectory: true)
@@ -1695,33 +2086,67 @@ protocol ForgeServicing {
 }
 
 struct ForgeService: ForgeServicing {
-    let baseURL = URL(string: "https://files.minecraftforge.net/net/minecraftforge/forge")!
+    let promotionsURL: URL
+    let installerBaseURL: URL
+
+    init(
+        promotionsURL: URL = URL(string: "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json")!,
+        installerBaseURL: URL = URL(string: "https://maven.minecraftforge.net/net/minecraftforge/forge")!
+    ) {
+        self.promotionsURL = promotionsURL
+        self.installerBaseURL = installerBaseURL
+    }
 
     func fetchVersions(gameVersion: String) async throws -> [ForgeVersion] {
-        let url = URL(string: "https://files.minecraftforge.net/net/minecraftforge/forge/\(gameVersion)/promotions_slim.json")!
-        let (data, _) = try await URLSession.shared.data(from: url)
+        let data = try await loadLoaderData(from: promotionsURL)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let promo = json?["promos"] as? [String: String] ?? [:]
-        return promo.compactMap { key, value in
-            guard key.hasSuffix("-latest") || key.hasSuffix("-recommended") else { return nil }
-            let mcVersion = key.replacingOccurrences(of: "-latest", with: "").replacingOccurrences(of: "-recommended", with: "")
-            guard mcVersion == gameVersion else { return nil }
-            return ForgeVersion(
-                version: value,
-                installerURL: "https://files.minecraftforge.net/net/minecraftforge/forge/\(gameVersion)-\(value)/forge-\(gameVersion)-\(value)-installer.jar"
-            )
+        let keys = ["\(gameVersion)-recommended", "\(gameVersion)-latest"]
+        var seen = Set<String>()
+        return keys.compactMap { key in
+            guard let value = promo[key], seen.insert(value).inserted else { return nil }
+            let installerURL = installerBaseURL
+                .appendingPathComponent("\(gameVersion)-\(value)", isDirectory: true)
+                .appendingPathComponent("forge-\(gameVersion)-\(value)-installer.jar")
+            return ForgeVersion(version: value, installerURL: installerURL.absoluteString)
         }
     }
 
     func installForge(gameVersion: String, forgeVersion: String? = nil, instance: LauncherInstance) async throws -> VersionMetadata {
-        let versions = try await fetchVersions(gameVersion: gameVersion)
-        guard let selected = versions.first else {
-            throw ForgeInstallError.noVersionAvailable(gameVersion)
+        let selected: ForgeVersion
+        if let forgeVersion {
+            let installerURL = installerBaseURL
+                .appendingPathComponent("\(gameVersion)-\(forgeVersion)", isDirectory: true)
+                .appendingPathComponent("forge-\(gameVersion)-\(forgeVersion)-installer.jar")
+            selected = ForgeVersion(version: forgeVersion, installerURL: installerURL.absoluteString)
+        } else {
+            let versions = try await fetchVersions(gameVersion: gameVersion)
+            guard let latest = versions.first else {
+                throw ForgeInstallError.noVersionAvailable(gameVersion)
+            }
+            selected = latest
         }
 
         let baseMetadata = try readBaseMetadata(instance: instance, gameVersion: gameVersion)
-        var metadata = baseMetadata
-        metadata.id = "\(gameVersion)-forge-\(selected.version)"
+        guard let installerURL = URL(string: selected.installerURL) else {
+            throw LoaderInstallationError.invalidInstallerProfile("无效的 Forge installer 地址：\(selected.installerURL)")
+        }
+        let profile = try await LoaderInstallerArchive.prepareClientProfile(
+            from: installerURL,
+            minecraftDirectory: instance.rootDirectory.appendingPathComponent(".minecraft", isDirectory: true)
+        )
+        guard let mainClass = profile.mainClass else {
+            throw LoaderInstallationError.invalidMainClass
+        }
+        let metadata = try LoaderMetadataBuilder.build(
+            base: baseMetadata,
+            id: "\(gameVersion)-forge-\(selected.version)",
+            mainClass: mainClass,
+            loader: .forge,
+            libraries: profile.libraries ?? [],
+            arguments: profile.arguments,
+            minecraftArguments: profile.minecraftArguments
+        )
 
         let versionDir = instance.rootDirectory
             .appendingPathComponent(".minecraft", isDirectory: true)
@@ -1764,27 +2189,80 @@ protocol NeoForgeServicing {
 }
 
 struct NeoForgeService: NeoForgeServicing {
-    let baseURL = URL(string: "https://maven.neoforged.net/releases/net/neoforged/neoforge")!
+    let versionsURL: URL
+    let installerBaseURL: URL
+
+    init(
+        versionsURL: URL = URL(string: "https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge")!,
+        installerBaseURL: URL = URL(string: "https://maven.neoforged.net/releases/net/neoforged/neoforge")!
+    ) {
+        self.versionsURL = versionsURL
+        self.installerBaseURL = installerBaseURL
+    }
 
     func fetchVersions(gameVersion: String) async throws -> [NeoForgeVersion] {
-        let url = URL(string: "https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge")!
-        let (data, _) = try await URLSession.shared.data(from: url)
+        let data = try await loadLoaderData(from: versionsURL)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let versions = json?["versions"] as? [String] ?? []
-        return versions
-            .filter { $0.hasPrefix(gameVersion + ".") }
-            .map { NeoForgeVersion(version: $0, neoForgeVersion: $0.replacingOccurrences(of: "\(gameVersion).", with: "")) }
+        let normalizedGameVersion: String? = {
+            let components = gameVersion.split(separator: ".")
+            guard components.count >= 3, components.first == "1" else { return nil }
+            return components.dropFirst().map(String.init).joined(separator: ".")
+        }()
+        let prefixes = [gameVersion, normalizedGameVersion]
+            .compactMap { $0 }
+            .map { "\($0)." }
+        return versions.compactMap { value in
+            guard let prefix = prefixes.first(where: { value.hasPrefix($0) }) else { return nil }
+            return NeoForgeVersion(
+                version: value,
+                neoForgeVersion: String(value.dropFirst(prefix.count))
+            )
+        }
     }
 
     func installNeoForge(gameVersion: String, version: String? = nil, instance: LauncherInstance) async throws -> VersionMetadata {
-        let versions = try await fetchVersions(gameVersion: gameVersion)
-        guard let selected = versions.first else {
-            throw NeoForgeInstallError.noVersionAvailable(gameVersion)
+        let selected: NeoForgeVersion
+        if let version {
+            let prefix = neoForgeGameVersionPrefix(for: gameVersion)
+            let fullVersion: String
+            if version.hasPrefix(prefix + ".") {
+                fullVersion = version
+            } else {
+                fullVersion = "\(prefix).\(version)"
+            }
+            selected = NeoForgeVersion(
+                version: fullVersion,
+                neoForgeVersion: String(fullVersion.dropFirst(prefix.count + 1))
+            )
+        } else {
+            let versions = try await fetchVersions(gameVersion: gameVersion)
+            guard let latest = versions.last else {
+                throw NeoForgeInstallError.noVersionAvailable(gameVersion)
+            }
+            selected = latest
         }
 
         let baseMetadata = try readBaseMetadata(instance: instance, gameVersion: gameVersion)
-        var metadata = baseMetadata
-        metadata.id = "\(gameVersion)-neoforge-\(selected.version)"
+        let installerURL = installerBaseURL
+            .appendingPathComponent(selected.version, isDirectory: true)
+            .appendingPathComponent("neoforge-\(selected.version)-installer.jar")
+        let profile = try await LoaderInstallerArchive.prepareClientProfile(
+            from: installerURL,
+            minecraftDirectory: instance.rootDirectory.appendingPathComponent(".minecraft", isDirectory: true)
+        )
+        guard let mainClass = profile.mainClass else {
+            throw LoaderInstallationError.invalidMainClass
+        }
+        let metadata = try LoaderMetadataBuilder.build(
+            base: baseMetadata,
+            id: "\(gameVersion)-neoforge-\(selected.version)",
+            mainClass: mainClass,
+            loader: .neoForge,
+            libraries: profile.libraries ?? [],
+            arguments: profile.arguments,
+            minecraftArguments: profile.minecraftArguments
+        )
 
         let versionDir = instance.rootDirectory
             .appendingPathComponent(".minecraft", isDirectory: true)
@@ -1794,6 +2272,12 @@ struct NeoForgeService: NeoForgeServicing {
         try JSONEncoder.mmcl.encode(metadata).write(to: versionDir.appendingPathComponent("\(metadata.id).json"), options: .atomic)
 
         return metadata
+    }
+
+    private func neoForgeGameVersionPrefix(for gameVersion: String) -> String {
+        let components = gameVersion.split(separator: ".")
+        guard components.count >= 3, components.first == "1" else { return gameVersion }
+        return components.dropFirst().map(String.init).joined(separator: ".")
     }
 
     private func readBaseMetadata(instance: LauncherInstance, gameVersion: String) throws -> VersionMetadata {

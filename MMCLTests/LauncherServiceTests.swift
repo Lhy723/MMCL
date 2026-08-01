@@ -440,6 +440,26 @@ final class LauncherServiceTests: XCTestCase {
     }
     """
 
+    private static func makeInstallerArchive(versionJSON: String, at archiveURL: URL) throws {
+        let stagingDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MMCL-installer-" + UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: stagingDirectory) }
+        try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+        let versionURL = stagingDirectory.appendingPathComponent("version.json")
+        try Data(versionJSON.utf8).write(to: versionURL)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        process.arguments = ["-q", "-j", archiveURL.path, versionURL.path]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw NSError(domain: "LauncherServiceTests", code: Int(process.terminationStatus))
+        }
+    }
+
     private static let modernArgumentsMetadataJSON = """
     {
       "id": "1.21.5",
@@ -519,6 +539,12 @@ final class LauncherServiceTests: XCTestCase {
         XCTAssertEqual(versions.count, 2)
         XCTAssertEqual(versions.first?.version, "0.16.14")
         XCTAssertTrue(versions.first?.stable == true)
+
+        let nestedVersions = try JSONDecoder.mmcl.decode(
+            [FabricLoaderVersion].self,
+            from: Data("[{\"loader\":{\"version\":\"0.19.3\",\"stable\":true}}]".utf8)
+        )
+        XCTAssertEqual(nestedVersions.first?.version, "0.19.3")
     }
 
     func testFabricProfileParsesMainClassAndInheritsFrom() throws {
@@ -529,7 +555,15 @@ final class LauncherServiceTests: XCTestCase {
             "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
             "arguments": {
                 "game": ["--assetIndex", "${assets_index_name}"]
-            }
+            },
+            "libraries": [
+                {
+                    "name": "net.fabricmc:fabric-loader:0.16.14",
+                    "url": "https://maven.fabricmc.net/",
+                    "sha1": "loader-sha1",
+                    "size": 123
+                }
+            ]
         }
         """.data(using: .utf8)!
         let profile = try JSONDecoder.mmcl.decode(FabricProfile.self, from: json)
@@ -537,6 +571,296 @@ final class LauncherServiceTests: XCTestCase {
         XCTAssertEqual(profile.inheritsFrom, "1.21.5")
         XCTAssertEqual(profile.mainClass, "net.fabricmc.loader.impl.launch.knot.KnotClient")
         XCTAssertEqual(profile.arguments?.game?.first, "--assetIndex")
+        XCTAssertEqual(profile.libraries?.first?.artifact(defaultRepository: URL(string: "https://maven.fabricmc.net/")!)?.path, "net/fabricmc/fabric-loader/0.16.14/fabric-loader-0.16.14.jar")
+    }
+
+    func testFabricServiceInstallsProfileLibrariesAndArguments() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let instance = LauncherInstance(
+            name: "Fabric 生存",
+            gameVersion: "1.21.5",
+            loader: .fabric,
+            rootDirectory: root
+        )
+        let baseMetadata = try VersionManifestService().decodeVersionMetadata(from: Data(Self.modernArgumentsMetadataJSON.utf8))
+        _ = try DownloadService().writeVersionMetadata(metadata: baseMetadata, instance: instance)
+
+        let apiRoot = root.appendingPathComponent("fabric-api", isDirectory: true)
+        let profileDirectory = apiRoot
+            .appendingPathComponent("versions/loader/1.21.5/0.16.14/profile", isDirectory: true)
+        try FileManager.default.createDirectory(at: profileDirectory, withIntermediateDirectories: true)
+        try Data("""
+        {
+          "id": "fabric-loader-0.16.14-1.21.5",
+          "inheritsFrom": "1.21.5",
+          "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+          "arguments": {
+            "game": ["--fabric-test", "true"],
+            "jvm": ["-DFabricMcEmu= net.minecraft.client.main.Main "]
+          },
+          "libraries": [
+            {
+              "name": "net.fabricmc:fabric-loader:0.16.14",
+              "url": "https://maven.fabricmc.net/",
+              "sha1": "loader-sha1",
+              "size": 123
+            },
+            {
+              "name": "net.fabricmc:intermediary:1.21.5",
+              "url": "https://maven.fabricmc.net/"
+            }
+          ]
+        }
+        """.utf8).write(to: profileDirectory.appendingPathComponent("json"))
+
+        let metadata = try await FabricService(baseURL: apiRoot).installFabric(
+            gameVersion: "1.21.5",
+            loaderVersion: "0.16.14",
+            instance: instance
+        )
+
+        XCTAssertEqual(metadata.id, "1.21.5-fabric-0.16.14")
+        XCTAssertEqual(metadata.mainClass, "net.fabricmc.loader.impl.launch.knot.KnotClient")
+        XCTAssertTrue(metadata.libraries.contains { $0.name == "net.fabricmc:fabric-loader:0.16.14" })
+        XCTAssertTrue(metadata.libraries.contains { $0.name == "net.fabricmc:intermediary:1.21.5" })
+        let jvmArguments = metadata.arguments?.jvm.flatMap { $0.value.strings } ?? []
+        let gameArguments = metadata.arguments?.game.flatMap { $0.value.strings } ?? []
+        XCTAssertTrue(jvmArguments.contains("-DFabricMcEmu= net.minecraft.client.main.Main "))
+        XCTAssertTrue(gameArguments.contains("--fabric-test"))
+
+        let jobs = DownloadService().makeVanillaInstallJobs(metadata: metadata, instance: instance, source: .official)
+        let loaderJob = try XCTUnwrap(jobs.first { $0.title == "net.fabricmc:fabric-loader:0.16.14" })
+        XCTAssertEqual(loaderJob.remoteURL?.absoluteString, "https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.16.14/fabric-loader-0.16.14.jar")
+        XCTAssertEqual(loaderJob.sha1, "loader-sha1")
+    }
+
+    func testQuiltServiceInstallsProfileLibrariesAndArguments() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let instance = LauncherInstance(
+            name: "Quilt 生存",
+            gameVersion: "1.21.5",
+            loader: .quilt,
+            rootDirectory: root
+        )
+        let baseMetadata = try VersionManifestService().decodeVersionMetadata(from: Data(Self.modernArgumentsMetadataJSON.utf8))
+        _ = try DownloadService().writeVersionMetadata(metadata: baseMetadata, instance: instance)
+
+        let apiRoot = root.appendingPathComponent("quilt-api", isDirectory: true)
+        let profileDirectory = apiRoot
+            .appendingPathComponent("versions/loader/1.21.5/0.20.0-beta.9/profile", isDirectory: true)
+        try FileManager.default.createDirectory(at: profileDirectory, withIntermediateDirectories: true)
+        try Data("""
+        {
+          "id": "quilt-loader-0.20.0-beta.9-1.21.5",
+          "inheritsFrom": "1.21.5",
+          "mainClass": "org.quiltmc.loader.impl.launch.knot.KnotClient",
+          "arguments": { "game": ["--quilt-test", "true"] },
+          "libraries": [
+            {
+              "name": "org.quiltmc:quilt-loader:0.20.0-beta.9",
+              "url": "https://maven.quiltmc.org/repository/release/"
+            },
+            {
+              "name": "net.fabricmc:intermediary:1.21.5",
+              "url": "https://maven.fabricmc.net/"
+            }
+          ]
+        }
+        """.utf8).write(to: profileDirectory.appendingPathComponent("json"))
+
+        let metadata = try await QuiltService(baseURL: apiRoot).installQuilt(
+            gameVersion: "1.21.5",
+            loaderVersion: "0.20.0-beta.9",
+            instance: instance
+        )
+
+        XCTAssertEqual(metadata.id, "1.21.5-quilt-0.20.0-beta.9")
+        XCTAssertEqual(metadata.mainClass, "org.quiltmc.loader.impl.launch.knot.KnotClient")
+        XCTAssertTrue(metadata.libraries.contains { $0.name == "org.quiltmc:quilt-loader:0.20.0-beta.9" })
+        let gameArguments = metadata.arguments?.game.flatMap { $0.value.strings } ?? []
+        XCTAssertTrue(gameArguments.contains("--quilt-test"))
+
+        let jobs = DownloadService().makeVanillaInstallJobs(metadata: metadata, instance: instance, source: .official)
+        let loaderJob = try XCTUnwrap(jobs.first { $0.title == "org.quiltmc:quilt-loader:0.20.0-beta.9" })
+        XCTAssertEqual(loaderJob.remoteURL?.absoluteString, "https://maven.quiltmc.org/repository/release/org/quiltmc/quilt-loader/0.20.0-beta.9/quilt-loader-0.20.0-beta.9.jar")
+        XCTAssertNil(loaderJob.sha1)
+    }
+
+    func testForgeServiceReadsOfficialInstallerVersionProfile() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let instance = LauncherInstance(
+            name: "Forge 生存",
+            gameVersion: "1.21.5",
+            loader: .forge,
+            rootDirectory: root
+        )
+        let baseMetadata = try VersionManifestService().decodeVersionMetadata(from: Data(Self.modernArgumentsMetadataJSON.utf8))
+        _ = try DownloadService().writeVersionMetadata(metadata: baseMetadata, instance: instance)
+
+        let installerBaseURL = root.appendingPathComponent("forge-installers", isDirectory: true)
+        let installerDirectory = installerBaseURL.appendingPathComponent("1.21.5-55.1.0", isDirectory: true)
+        try FileManager.default.createDirectory(at: installerDirectory, withIntermediateDirectories: true)
+        let installerURL = installerDirectory.appendingPathComponent("forge-1.21.5-55.1.0-installer.jar")
+        try Self.makeInstallerArchive(
+            versionJSON: """
+            {
+              "id": "1.21.5-forge-55.1.0",
+              "inheritsFrom": "1.21.5",
+              "mainClass": "net.minecraftforge.bootstrap.ForgeBootstrap",
+              "arguments": {
+                "game": ["--launchTarget", "forge_client"],
+                "jvm": ["-Djava.net.preferIPv6Addresses=system"]
+              },
+              "libraries": [
+                {
+                  "name": "net.minecraftforge:forge:1.21.5-55.1.0:universal",
+                  "downloads": {
+                    "artifact": {
+                      "path": "net/minecraftforge/forge/1.21.5-55.1.0/forge-1.21.5-55.1.0-universal.jar",
+                      "url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.21.5-55.1.0/forge-1.21.5-55.1.0-universal.jar",
+                      "sha1": "forge-sha1",
+                      "size": 123
+                    }
+                  }
+                }
+              ]
+            }
+            """,
+            at: installerURL
+        )
+        let promotionsURL = root.appendingPathComponent("promotions_slim.json")
+        try Data("""
+        {"promos":{"1.21.5-recommended":"55.1.0"}}
+        """.utf8).write(to: promotionsURL)
+
+        let metadata = try await ForgeService(
+            promotionsURL: promotionsURL,
+            installerBaseURL: installerBaseURL
+        ).installForge(gameVersion: "1.21.5", forgeVersion: nil, instance: instance)
+
+        XCTAssertEqual(metadata.id, "1.21.5-forge-55.1.0")
+        XCTAssertEqual(metadata.mainClass, "net.minecraftforge.bootstrap.ForgeBootstrap")
+        XCTAssertTrue(metadata.arguments?.game.flatMap { $0.value.strings }.contains("forge_client") == true)
+        let coreName = "net.minecraftforge:forge:1.21.5-55.1.0:universal"
+        let coreJob = try XCTUnwrap(
+            DownloadService().makeVanillaInstallJobs(metadata: metadata, instance: instance, source: .official)
+                .first { $0.title == coreName }
+        )
+        XCTAssertEqual(coreJob.sha1, "forge-sha1")
+        XCTAssertTrue(metadata.assetIndex.id == baseMetadata.assetIndex.id)
+    }
+
+    func testInstallerProfileKeepsProcessorGeneratedArtifactsOutOfDownloadJobs() throws {
+        let profile = try JSONDecoder.mmcl.decode(
+            InstallerVersionProfile.self,
+            from: Data("""
+            {
+              "id": "1.21.5-forge-55.1.11",
+              "mainClass": "net.minecraftforge.bootstrap.ForgeBootstrap",
+              "libraries": [
+                {
+                  "name": "net.minecraftforge:forge:1.21.5-55.1.11:client",
+                  "downloads": {
+                    "artifact": {
+                      "path": "net/minecraftforge/forge/1.21.5-55.1.11/forge-1.21.5-55.1.11-client.jar",
+                      "url": "",
+                      "sha1": "generated-sha1",
+                      "size": 123
+                    }
+                  }
+                }
+              ]
+            }
+            """.utf8)
+        )
+        let generatedArtifact = try XCTUnwrap(profile.libraries?.first?.artifact)
+        XCTAssertEqual(generatedArtifact.url.scheme, "mmcl-generated")
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let instance = LauncherInstance(
+            name: "Forge 处理器测试",
+            gameVersion: "1.21.5",
+            loader: .forge,
+            rootDirectory: root
+        )
+        var metadata = try VersionManifestService().decodeVersionMetadata(from: Data(Self.modernArgumentsMetadataJSON.utf8))
+        metadata.libraries = profile.libraries ?? []
+
+        let jobs = DownloadService().makeVanillaInstallJobs(metadata: metadata, instance: instance, source: .official)
+        XCTAssertFalse(jobs.contains { $0.title == "net.minecraftforge:forge:1.21.5-55.1.11:client" })
+    }
+
+    func testNeoForgeServiceReadsOfficialInstallerVersionProfile() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let instance = LauncherInstance(
+            name: "NeoForge 生存",
+            gameVersion: "1.21.5",
+            loader: .neoForge,
+            rootDirectory: root
+        )
+        let baseMetadata = try VersionManifestService().decodeVersionMetadata(from: Data(Self.modernArgumentsMetadataJSON.utf8))
+        _ = try DownloadService().writeVersionMetadata(metadata: baseMetadata, instance: instance)
+
+        let installerBaseURL = root.appendingPathComponent("neoforge-installers", isDirectory: true)
+        let installerDirectory = installerBaseURL.appendingPathComponent("21.5.98", isDirectory: true)
+        try FileManager.default.createDirectory(at: installerDirectory, withIntermediateDirectories: true)
+        let installerURL = installerDirectory.appendingPathComponent("neoforge-21.5.98-installer.jar")
+        try Self.makeInstallerArchive(
+            versionJSON: """
+            {
+              "id": "neoforge-21.5.98",
+              "inheritsFrom": "1.21.5",
+              "mainClass": "cpw.mods.bootstraplauncher.BootstrapLauncher",
+              "arguments": {
+                "game": ["--launchTarget", "neoforgeclient"],
+                "jvm": ["-DlibraryDirectory=${library_directory}", "-p", "${library_directory}/cpw/mods/bootstraplauncher/2.0.2/bootstraplauncher-2.0.2.jar${classpath_separator}${library_directory}/cpw/mods/securejarhandler/3.0.8/securejarhandler-3.0.8.jar"]
+              },
+              "libraries": [
+                {
+                  "name": "cpw.mods:bootstraplauncher:2.0.2",
+                  "downloads": {
+                    "artifact": {
+                      "path": "cpw/mods/bootstraplauncher/2.0.2/bootstraplauncher-2.0.2.jar",
+                      "url": "https://maven.neoforged.net/releases/cpw/mods/bootstraplauncher/2.0.2/bootstraplauncher-2.0.2.jar",
+                      "sha1": "neoforge-sha1",
+                      "size": 456
+                    }
+                  }
+                }
+              ]
+            }
+            """,
+            at: installerURL
+        )
+        let versionsURL = root.appendingPathComponent("neoforge-versions.json")
+        try Data("""
+        {"versions":["21.5.98"]}
+        """.utf8).write(to: versionsURL)
+
+        let metadata = try await NeoForgeService(
+            versionsURL: versionsURL,
+            installerBaseURL: installerBaseURL
+        ).installNeoForge(gameVersion: "1.21.5", version: nil, instance: instance)
+
+        XCTAssertEqual(metadata.id, "1.21.5-neoforge-21.5.98")
+        XCTAssertEqual(metadata.mainClass, "cpw.mods.bootstraplauncher.BootstrapLauncher")
+        XCTAssertTrue(metadata.arguments?.jvm.flatMap { $0.value.strings }.contains("-DlibraryDirectory=${library_directory}") == true)
+        let coreJob = try XCTUnwrap(
+            DownloadService().makeVanillaInstallJobs(metadata: metadata, instance: instance, source: .official)
+                .first { $0.title == "cpw.mods:bootstraplauncher:2.0.2" }
+        )
+        XCTAssertEqual(coreJob.sha1, "neoforge-sha1")
+        XCTAssertEqual(metadata.assetIndex.id, baseMetadata.assetIndex.id)
     }
 
     func testModrinthSearchResponseParsesHits() throws {
@@ -582,6 +906,13 @@ final class LauncherServiceTests: XCTestCase {
         let versions = try JSONDecoder.mmcl.decode([QuiltLoaderVersion].self, from: json)
         XCTAssertEqual(versions.count, 2)
         XCTAssertTrue(versions[0].stable)
+
+        let nestedVersions = try JSONDecoder.mmcl.decode(
+            [QuiltLoaderVersion].self,
+            from: Data("[{\"loader\":{\"version\":\"0.20.0-beta.9\"}}]".utf8)
+        )
+        XCTAssertEqual(nestedVersions.first?.version, "0.20.0-beta.9")
+        XCTAssertFalse(nestedVersions.first?.stable ?? true)
     }
 
     func testForgeVersionParsesPromotions() throws {
