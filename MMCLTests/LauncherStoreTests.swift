@@ -481,6 +481,7 @@ final class LauncherStoreTests: XCTestCase {
     @MainActor
     func testStorePreparesNativeLibrariesAndMarksInstanceReady() throws {
         let instanceID = UUID()
+        let launchVersionID = "1.21.5-fabric-0.16.14"
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -488,11 +489,13 @@ final class LauncherStoreTests: XCTestCase {
             id: instanceID,
             name: "原版生存",
             gameVersion: "1.21.5",
-            loader: .vanilla,
+            loader: .fabric,
             rootDirectory: root,
-            status: .notInstalled
+            status: .notInstalled,
+            launchVersionID: launchVersionID
         )
-        let metadata = try VersionManifestService().decodeVersionMetadata(from: Data(Self.versionMetadataJSON.utf8))
+        var metadata = try VersionManifestService().decodeVersionMetadata(from: Data(Self.versionMetadataJSON.utf8))
+        metadata.id = launchVersionID
         let nativeArchive = root
             .appendingPathComponent(".minecraft/libraries/org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3-natives-macos.jar")
         try FileManager.default.createDirectory(
@@ -520,8 +523,41 @@ final class LauncherStoreTests: XCTestCase {
         XCTAssertEqual(store.instances.first?.status, .ready)
         XCTAssertEqual(store.diagnostics.first?.title, "Native libraries 已准备")
         XCTAssertTrue(FileManager.default.fileExists(
-            atPath: root.appendingPathComponent(".minecraft/versions/1.21.5/natives/libmmcl.dylib").path
+            atPath: root.appendingPathComponent(".minecraft/versions/\(launchVersionID)/natives/libmmcl.dylib").path
         ))
+    }
+
+    @MainActor
+    func testStorePersistsLoaderLaunchVersionIDAfterInstallation() async throws {
+        let launchVersionID = "1.21.5-fabric-0.16.14"
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let instance = LauncherInstance(
+            name: "Fabric 生存",
+            gameVersion: "1.21.5",
+            loader: .fabric,
+            rootDirectory: root
+        )
+        var metadata = try VersionManifestService().decodeVersionMetadata(from: Data(Self.versionMetadataJSON.utf8))
+        metadata.id = launchVersionID
+        let store = LauncherStore(
+            instances: [instance],
+            downloadJobs: [],
+            featuredProjects: [],
+            diagnostics: [],
+            javaRuntimes: [],
+            availableVersions: [],
+            fabricService: StubFabricService(metadata: metadata)
+        )
+
+        await store.installFabricLoader(for: instance)
+
+        XCTAssertEqual(store.instances.first?.launchVersionID, launchVersionID)
+        let persistedData = try Data(contentsOf: root.appendingPathComponent("instance.json"))
+        let persisted = try JSONDecoder.mmcl.decode(LauncherInstance.self, from: persistedData)
+        XCTAssertEqual(persisted.launchVersionID, launchVersionID)
     }
 
     private static func zip(contentsOf directory: URL, destination: URL) throws {
@@ -566,6 +602,31 @@ final class LauncherStoreTests: XCTestCase {
             lastLaunchAccount = account
             didLaunch = true
             return session
+        }
+    }
+
+    private struct StubFabricService: FabricServicing {
+        let metadata: VersionMetadata
+
+        func fetchLoaderVersions(gameVersion: String) async throws -> [FabricLoaderVersion] {
+            []
+        }
+
+        func fetchProfile(gameVersion: String, loaderVersion: String) async throws -> FabricProfile {
+            FabricProfile(
+                id: metadata.id,
+                inheritsFrom: gameVersion,
+                mainClass: metadata.mainClass,
+                arguments: nil
+            )
+        }
+
+        func installFabric(
+            gameVersion: String,
+            loaderVersion: String?,
+            instance: LauncherInstance
+        ) async throws -> VersionMetadata {
+            metadata
         }
     }
 
@@ -649,7 +710,8 @@ final class LauncherStoreTests: XCTestCase {
                 rootDirectory: copyRoot,
                 profile: instance.profile,
                 status: instance.status,
-                lastPlayedAt: instance.lastPlayedAt
+                lastPlayedAt: instance.lastPlayedAt,
+                launchVersionID: instance.effectiveLaunchVersionID
             )
             let fileManager = FileManager.default
             try fileManager.copyItem(at: instance.rootDirectory, to: copyRoot)

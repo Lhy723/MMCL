@@ -161,6 +161,51 @@ final class LauncherServiceTests: XCTestCase {
         XCTAssertEqual(command.argument(after: "--assetIndex"), "19")
     }
 
+    func testLaunchServiceUsesLoaderSpecificVersionMetadata() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let loaderVersionID = "1.21.5-fabric-0.16.14"
+        let instance = LauncherInstance(
+            name: "Fabric 生存",
+            gameVersion: "1.21.5",
+            loader: .fabric,
+            rootDirectory: root,
+            profile: LaunchProfile(offlineUsername: "Steve", memoryMegabytes: 4096, jvmArguments: ["-XX:+UseG1GC"], resolutionWidth: 854, resolutionHeight: 480),
+            status: .ready,
+            launchVersionID: loaderVersionID
+        )
+        var baseMetadata = try VersionManifestService().decodeVersionMetadata(from: Data(Self.modernArgumentsMetadataJSON.utf8))
+        baseMetadata.id = "1.21.5"
+        baseMetadata.mainClass = "base.minecraft.Main"
+        var loaderMetadata = baseMetadata
+        loaderMetadata.id = loaderVersionID
+        loaderMetadata.mainClass = "net.fabricmc.loader.impl.launch.knot.KnotClient"
+        let downloadService = DownloadService()
+        _ = try downloadService.writeVersionMetadata(metadata: baseMetadata, instance: instance)
+        _ = try downloadService.writeVersionMetadata(metadata: loaderMetadata, instance: instance)
+        let java = JavaRuntime(
+            name: "Temurin 21",
+            version: "21.0.3",
+            majorVersion: 21,
+            architecture: .arm64,
+            executableURL: URL(fileURLWithPath: "/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home/bin/java")
+        )
+
+        let command = LaunchService().previewCommand(
+            for: instance,
+            java: java,
+            account: MinecraftAccount(username: "Steve", type: .offline)
+        )
+
+        XCTAssertTrue(command.contains("net.fabricmc.loader.impl.launch.knot.KnotClient"))
+        XCTAssertFalse(command.contains("base.minecraft.Main"))
+        let classpath = try XCTUnwrap(command.argument(after: "-cp"))
+        XCTAssertTrue(classpath.contains(root.appendingPathComponent(".minecraft/versions/\(loaderVersionID)/\(loaderVersionID).jar").path))
+        XCTAssertFalse(classpath.contains(root.appendingPathComponent(".minecraft/versions/1.21.5/1.21.5.jar").path))
+        XCTAssertEqual(command.argument(after: "--version"), loaderVersionID)
+    }
+
     func testLaunchServiceUsesSelectedMicrosoftAccountAndRedactsAccessToken() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

@@ -21,6 +21,7 @@ final class LauncherModelTests: XCTestCase {
         let data = try JSONEncoder.mmcl.encode(instance)
         let decoded = try JSONDecoder.mmcl.decode(LauncherInstance.self, from: data)
         XCTAssertEqual(decoded.loader, .neoForge)
+        XCTAssertEqual(decoded.launchVersionID, "1.21.5")
     }
 
     func testContentProjectRoundTripsNeoForgeLoader() throws {
@@ -56,6 +57,7 @@ final class LauncherModelTests: XCTestCase {
 
         XCTAssertEqual(decoded.name, "生存 1.21")
         XCTAssertEqual(decoded.gameVersion, "1.21.5")
+        XCTAssertEqual(decoded.launchVersionID, "1.21.5")
         XCTAssertEqual(decoded.loader, .vanilla)
         XCTAssertEqual(decoded.rootDirectory.path, root.path)
         XCTAssertEqual(decoded.profile.offlineUsername, "Steve")
@@ -63,6 +65,27 @@ final class LauncherModelTests: XCTestCase {
         XCTAssertEqual(decoded.profile.jvmArguments, ["-XX:+UseG1GC"])
         XCTAssertEqual(decoded.status, .ready)
         XCTAssertEqual(decoded.lastPlayedAt, Date(timeIntervalSince1970: 1_700_000_000))
+    }
+
+    func testLegacyLauncherInstanceDefaultsLaunchVersionIDToGameVersion() throws {
+        let instance = LauncherInstance(
+            name: "旧实例",
+            gameVersion: "1.20.1",
+            loader: .vanilla,
+            rootDirectory: URL(fileURLWithPath: "/Users/example/Instances/legacy")
+        )
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder.mmcl.encode(instance)
+            ) as? [String: Any]
+        )
+        object.removeValue(forKey: "launchVersionID")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder.mmcl.decode(LauncherInstance.self, from: legacyData)
+
+        XCTAssertEqual(decoded.launchVersionID, "1.20.1")
+        XCTAssertEqual(decoded.effectiveLaunchVersionID, "1.20.1")
     }
 
     func testJavaRuntimeReportsArchitectureAndRecommendedState() {

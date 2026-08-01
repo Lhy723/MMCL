@@ -102,7 +102,8 @@ struct InstanceService: InstanceServicing {
             rootDirectory: copyRoot,
             profile: instance.profile,
             status: instance.status,
-            lastPlayedAt: instance.lastPlayedAt
+            lastPlayedAt: instance.lastPlayedAt,
+            launchVersionID: instance.effectiveLaunchVersionID
         )
 
         let fileManager = FileManager.default
@@ -134,7 +135,11 @@ struct InstanceService: InstanceServicing {
             let fileURL = dir.appendingPathComponent("instance.json")
             guard fileManager.fileExists(atPath: fileURL.path) else { continue }
             let data = try Data(contentsOf: fileURL)
-            let instance = try decode(from: data)
+            var instance = try decode(from: data)
+            if instance.launchVersionID != instance.effectiveLaunchVersionID {
+                instance.launchVersionID = instance.effectiveLaunchVersionID
+                try? encode(instance).write(to: fileURL, options: .atomic)
+            }
             instances.append(instance)
         }
         return instances
@@ -575,7 +580,7 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
         let librariesDirectory = minecraftDirectory.appendingPathComponent("libraries", isDirectory: true)
         let nativesDirectory = minecraftDirectory
             .appendingPathComponent("versions", isDirectory: true)
-            .appendingPathComponent(metadata.id, isDirectory: true)
+            .appendingPathComponent(instance.effectiveLaunchVersionID, isDirectory: true)
             .appendingPathComponent("natives", isDirectory: true)
         try FileManager.default.createDirectory(at: nativesDirectory, withIntermediateDirectories: true)
 
@@ -1072,11 +1077,12 @@ struct LaunchService: LaunchServicing {
         account: MinecraftAccount
     ) -> [String] {
         let minecraftDirectory = instance.rootDirectory.appendingPathComponent(".minecraft", isDirectory: true)
+        let launchVersionID = instance.effectiveLaunchVersionID
         let versionDirectory = minecraftDirectory
             .appendingPathComponent("versions", isDirectory: true)
-            .appendingPathComponent(instance.gameVersion, isDirectory: true)
+            .appendingPathComponent(launchVersionID, isDirectory: true)
         let nativesDirectory = versionDirectory.appendingPathComponent("natives", isDirectory: true)
-        let clientJar = versionDirectory.appendingPathComponent("\(instance.gameVersion).jar")
+        let clientJar = versionDirectory.appendingPathComponent("\(launchVersionID).jar")
         let librariesDirectory = minecraftDirectory.appendingPathComponent("libraries", isDirectory: true)
         let metadata = localVersionMetadata(for: instance)
         let classpath = metadata.map {
@@ -1145,7 +1151,7 @@ struct LaunchService: LaunchServicing {
             "--username",
             substitutions["auth_player_name"] ?? instance.profile.offlineUsername,
             "--version",
-            instance.gameVersion,
+            launchVersionID,
             "--gameDir",
             minecraftDirectory.path,
             "--assetsDir",
@@ -1166,10 +1172,11 @@ struct LaunchService: LaunchServicing {
     ) -> LaunchPreflightReport {
         let fileManager = FileManager.default
         let minecraftDirectory = instance.rootDirectory.appendingPathComponent(".minecraft", isDirectory: true)
+        let launchVersionID = instance.effectiveLaunchVersionID
         let versionDirectory = minecraftDirectory
             .appendingPathComponent("versions", isDirectory: true)
-            .appendingPathComponent(instance.gameVersion, isDirectory: true)
-        let metadataURL = versionDirectory.appendingPathComponent("\(instance.gameVersion).json")
+            .appendingPathComponent(launchVersionID, isDirectory: true)
+        let metadataURL = versionDirectory.appendingPathComponent("\(launchVersionID).json")
         var blockingIssues: [String] = []
         var warnings: [String] = []
         var actions: [String] = []
@@ -1203,7 +1210,7 @@ struct LaunchService: LaunchServicing {
             )
         }
 
-        let clientJar = versionDirectory.appendingPathComponent("\(instance.gameVersion).jar")
+        let clientJar = versionDirectory.appendingPathComponent("\(launchVersionID).jar")
         if !fileManager.fileExists(atPath: clientJar.path) {
             blockingIssues.append("缺少 client jar：\(clientJar.path)")
             actions.append("生成安装计划并完成下载")
@@ -1306,7 +1313,7 @@ struct LaunchService: LaunchServicing {
         let isMicrosoftAccount = account.type == .microsoft
         return [
             "auth_player_name": isMicrosoftAccount ? account.username : instance.profile.offlineUsername,
-            "version_name": instance.gameVersion,
+            "version_name": instance.effectiveLaunchVersionID,
             "game_directory": minecraftDirectory.path,
             "assets_root": minecraftDirectory.appendingPathComponent("assets", isDirectory: true).path,
             "assets_index_name": assetIndex,
@@ -1342,11 +1349,12 @@ struct LaunchService: LaunchServicing {
     }
 
     private func localVersionMetadata(for instance: LauncherInstance) -> VersionMetadata? {
+        let launchVersionID = instance.effectiveLaunchVersionID
         let metadataURL = instance.rootDirectory
             .appendingPathComponent(".minecraft", isDirectory: true)
             .appendingPathComponent("versions", isDirectory: true)
-            .appendingPathComponent(instance.gameVersion, isDirectory: true)
-            .appendingPathComponent("\(instance.gameVersion).json")
+            .appendingPathComponent(launchVersionID, isDirectory: true)
+            .appendingPathComponent("\(launchVersionID).json")
         guard let data = try? Data(contentsOf: metadataURL) else { return nil }
         return try? JSONDecoder.mmcl.decode(VersionMetadata.self, from: data)
     }

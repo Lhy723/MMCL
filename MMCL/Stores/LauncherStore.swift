@@ -1006,13 +1006,14 @@ extension LauncherStore {
 
         do {
             let metadata = try await repairMetadata(for: selectedInstance)
+            let launchInstance = instanceForVersionMetadata(metadata, instance: selectedInstance)
             plannedVersionMetadata = metadata
             plannedInstanceID = selectedInstance.id
-            _ = try downloadService.writeVersionMetadata(metadata: metadata, instance: selectedInstance)
+            _ = try downloadService.writeVersionMetadata(metadata: metadata, instance: launchInstance)
 
             let jobs = downloadService.makeVanillaRepairJobs(
                 metadata: metadata,
-                instance: selectedInstance,
+                instance: launchInstance,
                 source: selectedDownloadSource
             )
             downloadJobs = jobs
@@ -1169,10 +1170,11 @@ extension LauncherStore {
     }
 
     func planVanillaInstall(metadata: VersionMetadata, assetIndex: AssetIndex? = nil, for instance: LauncherInstance) {
+        let launchInstance = instanceForVersionMetadata(metadata, instance: instance)
         plannedVersionMetadata = metadata
         plannedInstanceID = instance.id
         do {
-            _ = try downloadService.writeVersionMetadata(metadata: metadata, instance: instance)
+            _ = try downloadService.writeVersionMetadata(metadata: metadata, instance: launchInstance)
         } catch {
             diagnostics.insert(
                 DiagnosticReport(
@@ -1186,7 +1188,7 @@ extension LauncherStore {
         }
         var jobs = downloadService.makeVanillaInstallJobs(
             metadata: metadata,
-            instance: instance,
+            instance: launchInstance,
             source: selectedDownloadSource
         )
         if let assetIndex {
@@ -1194,7 +1196,7 @@ extension LauncherStore {
             let groupName = jobs.first?.taskGroupName
             jobs.append(contentsOf: downloadService.makeAssetObjectJobs(
                 assetIndex: assetIndex,
-                instance: instance,
+                instance: launchInstance,
                 source: selectedDownloadSource,
                 taskGroupID: groupID,
                 taskGroupName: groupName
@@ -1220,13 +1222,14 @@ extension LauncherStore {
                 loaderVersion: nil,
                 instance: instance
             )
+            let launchInstance = instanceForVersionMetadata(metadata, instance: instance)
             plannedVersionMetadata = metadata
             plannedInstanceID = instance.id
 
             // Generate install jobs for the new metadata
             let jobs = downloadService.makeVanillaInstallJobs(
                 metadata: metadata,
-                instance: instance,
+                instance: launchInstance,
                 source: selectedDownloadSource
             )
             downloadJobs = jobs
@@ -1257,9 +1260,10 @@ extension LauncherStore {
     func installQuiltLoader(for instance: LauncherInstance) async {
         do {
             let metadata = try await quiltService.installQuilt(gameVersion: instance.gameVersion, loaderVersion: nil, instance: instance)
+            let launchInstance = instanceForVersionMetadata(metadata, instance: instance)
             plannedVersionMetadata = metadata
             plannedInstanceID = instance.id
-            let jobs = downloadService.makeVanillaInstallJobs(metadata: metadata, instance: instance, source: selectedDownloadSource)
+            let jobs = downloadService.makeVanillaInstallJobs(metadata: metadata, instance: launchInstance, source: selectedDownloadSource)
             downloadJobs = jobs
             updateInstanceStatus(instance.id, status: .missingFiles)
             diagnostics.insert(DiagnosticReport(title: "Quilt loader 已安装", severity: .info, summary: "已为 \(instance.name) 安装 Quilt loader，生成 \(jobs.count) 个下载任务。", suggestedActions: ["打开下载中心执行任务"]), at: 0)
@@ -1272,9 +1276,10 @@ extension LauncherStore {
     func installForgeLoader(for instance: LauncherInstance) async {
         do {
             let metadata = try await forgeService.installForge(gameVersion: instance.gameVersion, forgeVersion: nil, instance: instance)
+            let launchInstance = instanceForVersionMetadata(metadata, instance: instance)
             plannedVersionMetadata = metadata
             plannedInstanceID = instance.id
-            let jobs = downloadService.makeVanillaInstallJobs(metadata: metadata, instance: instance, source: selectedDownloadSource)
+            let jobs = downloadService.makeVanillaInstallJobs(metadata: metadata, instance: launchInstance, source: selectedDownloadSource)
             downloadJobs = jobs
             updateInstanceStatus(instance.id, status: .missingFiles)
             diagnostics.insert(DiagnosticReport(title: "Forge 已安装", severity: .info, summary: "已为 \(instance.name) 安装 Forge，生成 \(jobs.count) 个下载任务。", suggestedActions: ["打开下载中心执行任务"]), at: 0)
@@ -1287,9 +1292,10 @@ extension LauncherStore {
     func installNeoForgeLoader(for instance: LauncherInstance) async {
         do {
             let metadata = try await neoForgeService.installNeoForge(gameVersion: instance.gameVersion, version: nil, instance: instance)
+            let launchInstance = instanceForVersionMetadata(metadata, instance: instance)
             plannedVersionMetadata = metadata
             plannedInstanceID = instance.id
-            let jobs = downloadService.makeVanillaInstallJobs(metadata: metadata, instance: instance, source: selectedDownloadSource)
+            let jobs = downloadService.makeVanillaInstallJobs(metadata: metadata, instance: launchInstance, source: selectedDownloadSource)
             downloadJobs = jobs
             updateInstanceStatus(instance.id, status: .missingFiles)
             diagnostics.insert(DiagnosticReport(title: "NeoForge 已安装", severity: .info, summary: "已为 \(instance.name) 安装 NeoForge，生成 \(jobs.count) 个下载任务。", suggestedActions: ["打开下载中心执行任务"]), at: 0)
@@ -1831,7 +1837,8 @@ extension LauncherStore {
             return
         }
 
-        guard let plannedVersionMetadata else {
+        let metadata = (plannedInstanceID == instance.id ? plannedVersionMetadata : nil) ?? localVersionMetadata(for: instance)
+        guard let metadata else {
             diagnostics.insert(
                 DiagnosticReport(
                     title: "缺少版本元数据",
@@ -1846,7 +1853,7 @@ extension LauncherStore {
 
         do {
             let archives = try downloadService.prepareNativeLibraries(
-                metadata: plannedVersionMetadata,
+                metadata: metadata,
                 instance: instance
             )
             updateInstanceStatus(instance.id, status: .ready)
@@ -1907,6 +1914,30 @@ extension LauncherStore {
         persistInstance(at: index)
     }
 
+    @discardableResult
+    private func updateLaunchVersionID(_ launchVersionID: String, for id: LauncherInstance.ID) -> LauncherInstance? {
+        let normalizedLaunchVersionID = launchVersionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedLaunchVersionID.isEmpty,
+              let index = instances.firstIndex(where: { $0.id == id })
+        else {
+            return instances.first(where: { $0.id == id })
+        }
+
+        instances[index].launchVersionID = normalizedLaunchVersionID
+        persistInstance(at: index)
+        return instances[index]
+    }
+
+    private func instanceForVersionMetadata(_ metadata: VersionMetadata, instance: LauncherInstance) -> LauncherInstance {
+        let launchVersionID: String
+        if metadata.id == instance.gameVersion, instance.loader != .vanilla {
+            launchVersionID = instance.effectiveLaunchVersionID
+        } else {
+            launchVersionID = metadata.id
+        }
+        return updateLaunchVersionID(launchVersionID, for: instance.id) ?? instance
+    }
+
     private func finalizeDownloadedPlanIfPossible() {
         guard downloadJobs.contains(where: { $0.status == .completed }) else { return }
         guard !downloadJobs.contains(where: { $0.status == .queued || $0.status == .running || $0.status == .failed }) else {
@@ -1919,12 +1950,13 @@ extension LauncherStore {
             return
         }
 
+        let launchInstance = instanceForVersionMetadata(plannedVersionMetadata, instance: instance)
         do {
             let archives = try downloadService.prepareNativeLibraries(
                 metadata: plannedVersionMetadata,
-                instance: instance
+                instance: launchInstance
             )
-            updateInstanceStatus(instance.id, status: .ready)
+            updateInstanceStatus(launchInstance.id, status: .ready)
             diagnostics.insert(
                 DiagnosticReport(
                     title: "安装收尾完成",
@@ -1957,6 +1989,10 @@ extension LauncherStore {
             return localMetadata
         }
 
+        if instance.effectiveLaunchVersionID != instance.gameVersion {
+            throw RepairPlanningError.missingVersionMetadata(instance.effectiveLaunchVersionID)
+        }
+
         guard let version = availableVersions.first(where: { $0.id == instance.gameVersion }) else {
             throw RepairPlanningError.missingVersionMetadata(instance.gameVersion)
         }
@@ -1965,11 +2001,12 @@ extension LauncherStore {
     }
 
     private func localVersionMetadata(for instance: LauncherInstance) -> VersionMetadata? {
+        let launchVersionID = instance.effectiveLaunchVersionID
         let metadataURL = instance.rootDirectory
             .appendingPathComponent(".minecraft", isDirectory: true)
             .appendingPathComponent("versions", isDirectory: true)
-            .appendingPathComponent(instance.gameVersion, isDirectory: true)
-            .appendingPathComponent("\(instance.gameVersion).json")
+            .appendingPathComponent(launchVersionID, isDirectory: true)
+            .appendingPathComponent("\(launchVersionID).json")
         guard let data = try? Data(contentsOf: metadataURL) else { return nil }
         return try? JSONDecoder.mmcl.decode(VersionMetadata.self, from: data)
     }

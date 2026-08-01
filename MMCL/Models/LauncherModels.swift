@@ -350,11 +350,27 @@ struct LauncherInstance: Identifiable, Codable, Equatable {
     var id: UUID
     var name: String
     var gameVersion: String
+    /// The version ID whose JSON/JAR should be used to launch this instance.
+    /// For vanilla instances this is the same as `gameVersion`; loader
+    /// installations replace it with IDs such as `1.21.5-fabric-0.16.14`.
+    var launchVersionID: String
     var loader: GameLoader
     var rootDirectory: URL
     var profile: LaunchProfile
     var status: InstanceStatus
     var lastPlayedAt: Date?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case gameVersion
+        case launchVersionID
+        case loader
+        case rootDirectory
+        case profile
+        case status
+        case lastPlayedAt
+    }
 
     init(
         id: UUID = UUID(),
@@ -364,16 +380,111 @@ struct LauncherInstance: Identifiable, Codable, Equatable {
         rootDirectory: URL,
         profile: LaunchProfile = .default,
         status: InstanceStatus = .notInstalled,
-        lastPlayedAt: Date? = nil
+        lastPlayedAt: Date? = nil,
+        launchVersionID: String? = nil
     ) {
         self.id = id
         self.name = name
         self.gameVersion = gameVersion
+        let normalizedLaunchVersionID = (launchVersionID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        self.launchVersionID = normalizedLaunchVersionID.isEmpty ? gameVersion : normalizedLaunchVersionID
         self.loader = loader
         self.rootDirectory = rootDirectory
         self.profile = profile
         self.status = status
         self.lastPlayedAt = lastPlayedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decode(UUID.self, forKey: .id),
+            name: try container.decode(String.self, forKey: .name),
+            gameVersion: try container.decode(String.self, forKey: .gameVersion),
+            loader: try container.decodeIfPresent(GameLoader.self, forKey: .loader) ?? .vanilla,
+            rootDirectory: try container.decode(URL.self, forKey: .rootDirectory),
+            profile: try container.decodeIfPresent(LaunchProfile.self, forKey: .profile) ?? .default,
+            status: try container.decodeIfPresent(InstanceStatus.self, forKey: .status) ?? .notInstalled,
+            lastPlayedAt: try container.decodeIfPresent(Date.self, forKey: .lastPlayedAt),
+            launchVersionID: try container.decodeIfPresent(String.self, forKey: .launchVersionID)
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(gameVersion, forKey: .gameVersion)
+        try container.encode(effectiveLaunchVersionID, forKey: .launchVersionID)
+        try container.encode(loader, forKey: .loader)
+        try container.encode(rootDirectory, forKey: .rootDirectory)
+        try container.encode(profile, forKey: .profile)
+        try container.encode(status, forKey: .status)
+        try container.encodeIfPresent(lastPlayedAt, forKey: .lastPlayedAt)
+    }
+
+    var effectiveLaunchVersionID: String {
+        let normalizedLaunchVersionID = launchVersionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalizedLaunchVersionID == gameVersion,
+              let inferredLaunchVersionID
+        else {
+            return normalizedLaunchVersionID.isEmpty ? gameVersion : normalizedLaunchVersionID
+        }
+        return inferredLaunchVersionID
+    }
+
+    private var loaderVersionPrefix: String? {
+        switch loader {
+        case .vanilla:
+            return nil
+        case .fabric:
+            return "\(gameVersion)-fabric-"
+        case .quilt:
+            return "\(gameVersion)-quilt-"
+        case .forge:
+            return "\(gameVersion)-forge-"
+        case .neoForge:
+            return "\(gameVersion)-neoforge-"
+        }
+    }
+
+    private var inferredLaunchVersionID: String? {
+        guard let loaderVersionPrefix else { return nil }
+        let versionsDirectory = rootDirectory
+            .appendingPathComponent(".minecraft", isDirectory: true)
+            .appendingPathComponent("versions", isDirectory: true)
+        let fileManager = FileManager.default
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: versionsDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+
+        let candidates: [(url: URL, modificationDate: Date)] = entries.compactMap { url in
+            guard url.lastPathComponent.hasPrefix(loaderVersionPrefix),
+                  let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey]),
+                  values.isDirectory == true,
+                  fileManager.fileExists(
+                    atPath: url.appendingPathComponent("\(url.lastPathComponent).json").path
+                  )
+            else {
+                return nil
+            }
+            return (url, values.contentModificationDate ?? .distantPast)
+        }
+
+        return candidates
+            .sorted {
+                if $0.modificationDate != $1.modificationDate {
+                    return $0.modificationDate > $1.modificationDate
+                }
+                return $0.url.lastPathComponent > $1.url.lastPathComponent
+            }
+            .first?
+            .url
+            .lastPathComponent
     }
 
     var subtitle: String {
