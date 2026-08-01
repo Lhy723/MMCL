@@ -257,6 +257,7 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
                         let data = try Data(contentsOf: job.destination)
                         let actualSHA1 = Self.sha1Hex(for: data)
                         if actualSHA1.caseInsensitiveCompare(expectedSHA1) != .orderedSame {
+                            try? FileManager.default.removeItem(at: job.destination)
                             var failedJob = job
                             failedJob.status = .failed
                             self.lock.lock()
@@ -472,7 +473,19 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
         source: DownloadSource
     ) -> [DownloadJob] {
         makeVanillaInstallJobs(metadata: metadata, instance: instance, source: source)
-            .filter { !FileManager.default.fileExists(atPath: $0.destination.path) }
+            .filter { job in
+                guard FileManager.default.fileExists(atPath: job.destination.path) else {
+                    return true
+                }
+                guard let expectedSHA1 = job.sha1 else {
+                    return false
+                }
+                guard let data = try? Data(contentsOf: job.destination) else {
+                    return true
+                }
+                let actualSHA1 = Self.sha1Hex(for: data)
+                return actualSHA1.caseInsensitiveCompare(expectedSHA1) != .orderedSame
+            }
     }
 
     func makeAssetObjectJobs(
@@ -577,6 +590,7 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
             if let data = try? Data(contentsOf: job.destination) {
                 let actualSHA1 = Self.sha1Hex(for: data)
                 if actualSHA1.caseInsensitiveCompare(expectedSHA1) != .orderedSame {
+                    try? FileManager.default.removeItem(at: job.destination)
                     job.status = .failed
                     lock.lock()
                     jobsByID[jobID] = job

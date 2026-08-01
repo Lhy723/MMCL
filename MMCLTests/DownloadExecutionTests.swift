@@ -40,7 +40,7 @@ final class DownloadExecutionTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: destination), Data("hello minecraft".utf8))
     }
 
-    func testDownloadServiceMarksFailedWhenSHA1DoesNotMatch() async throws {
+    func testDownloadServiceMarksFailedWhenSHA1DoesNotMatchAndRemovesDestination() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -75,7 +75,7 @@ final class DownloadExecutionTests: XCTestCase {
         }
 
         XCTAssertEqual(resultJob.status, DownloadStatus.failed)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
     }
 
     @MainActor

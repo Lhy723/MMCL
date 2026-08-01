@@ -86,7 +86,7 @@ final class VanillaInstallPlanningTests: XCTestCase {
     }
 
     func testDownloadServicePlansOnlyMissingRepairJobs() throws {
-        let metadata = try VersionManifestService().decodeVersionMetadata(from: Data(Self.versionMetadataJSON.utf8))
+        var metadata = try VersionManifestService().decodeVersionMetadata(from: Data(Self.versionMetadataJSON.utf8))
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -103,11 +103,43 @@ final class VanillaInstallPlanningTests: XCTestCase {
         try FileManager.default.createDirectory(at: library.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("asset-index".utf8).write(to: assetIndex)
         try Data("library".utf8).write(to: library)
+        metadata.assetIndex.sha1 = DownloadService.sha1Hex(for: Data("asset-index".utf8))
+        metadata.libraries[0].downloads?.artifact?.sha1 = DownloadService.sha1Hex(for: Data("library".utf8))
 
         let jobs = DownloadService().makeVanillaRepairJobs(metadata: metadata, instance: instance, source: .official)
 
         XCTAssertEqual(jobs.map(\.title), [
             "Minecraft 1.21.5 客户端",
+            "org.lwjgl:lwjgl:3.3.3 native"
+        ])
+    }
+
+    func testDownloadServicePlansCorruptedRepairJobs() throws {
+        var metadata = try VersionManifestService().decodeVersionMetadata(from: Data(Self.versionMetadataJSON.utf8))
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let instance = LauncherInstance(
+            name: "原版生存",
+            gameVersion: "1.21.5",
+            loader: .vanilla,
+            rootDirectory: root,
+            status: .missingFiles
+        )
+        let assetIndex = root.appendingPathComponent(".minecraft/assets/indexes/19.json")
+        let library = root.appendingPathComponent(".minecraft/libraries/org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3.jar")
+        try FileManager.default.createDirectory(at: assetIndex.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: library.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("asset-index".utf8).write(to: assetIndex)
+        try Data("corrupted-library".utf8).write(to: library)
+        metadata.assetIndex.sha1 = DownloadService.sha1Hex(for: Data("asset-index".utf8))
+        metadata.libraries[0].downloads?.artifact?.sha1 = DownloadService.sha1Hex(for: Data("expected-library".utf8))
+
+        let jobs = DownloadService().makeVanillaRepairJobs(metadata: metadata, instance: instance, source: .official)
+
+        XCTAssertEqual(jobs.map(\.title), [
+            "Minecraft 1.21.5 客户端",
+            "org.lwjgl:lwjgl:3.3.3",
             "org.lwjgl:lwjgl:3.3.3 native"
         ])
     }
