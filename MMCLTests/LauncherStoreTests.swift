@@ -951,6 +951,66 @@ final class LauncherStoreTests: XCTestCase {
         XCTAssertEqual(service.startedJobs.map(\.id), [running.id, next.id])
     }
 
+    @MainActor
+    func testStoreExposesNewGitHubReleaseAndAutomaticZIPAsset() async {
+        let service = StubAppUpdateService(release: Self.makeUpdateRelease(version: "0.1.2"))
+        let store = LauncherStore(
+            instances: [],
+            downloadJobs: [],
+            featuredProjects: [],
+            diagnostics: [],
+            javaRuntimes: [],
+            availableVersions: [],
+            appUpdateService: service
+        )
+
+        await store.checkForUpdates(showDiagnostics: false)
+
+        XCTAssertTrue(store.updateAvailable)
+        XCTAssertEqual(store.latestVersion, "0.1.2")
+        XCTAssertEqual(store.updateDownloadURL, service.release.automaticAsset?.browserDownloadURL)
+        XCTAssertEqual(store.updateReleaseURL, service.release.htmlURL)
+    }
+
+    @MainActor
+    func testStoreDelegatesUpdateInstallationToReleaseService() async {
+        let service = StubAppUpdateService(release: Self.makeUpdateRelease(version: "0.1.2"))
+        let store = LauncherStore(
+            instances: [],
+            downloadJobs: [],
+            featuredProjects: [],
+            diagnostics: [],
+            javaRuntimes: [],
+            availableVersions: [],
+            appUpdateService: service
+        )
+
+        await store.checkForUpdates(showDiagnostics: false)
+        await store.downloadAndInstallUpdate()
+
+        XCTAssertEqual(service.installedRelease, service.release)
+        XCTAssertEqual(store.diagnostics.first?.title, "更新准备完成")
+    }
+
+    private static func makeUpdateRelease(version: String) -> AppUpdateRelease {
+        AppUpdateRelease(
+            tagName: "v\(version)",
+            version: SemanticVersion(version)!,
+            title: "v\(version)",
+            notes: "更新说明",
+            htmlURL: URL(string: "https://github.com/Lhy723/MMCL/releases/tag/v\(version)"),
+            assets: [
+                AppUpdateAsset(
+                    name: "MMCL-v\(version).zip",
+                    browserDownloadURL: URL(string: "https://example.com/MMCL-v\(version).zip")!,
+                    contentType: "application/zip",
+                    size: 1,
+                    digest: nil
+                )
+            ]
+        )
+    }
+
     private static let versionMetadataJSON = """
     {
       "id": "1.21.5",
@@ -989,6 +1049,23 @@ final class LauncherStoreTests: XCTestCase {
       ]
     }
     """
+}
+
+private final class StubAppUpdateService: AppUpdateServicing {
+    let release: AppUpdateRelease
+    private(set) var installedRelease: AppUpdateRelease?
+
+    init(release: AppUpdateRelease) {
+        self.release = release
+    }
+
+    func fetchLatestRelease() async throws -> AppUpdateRelease {
+        release
+    }
+
+    func installUpdate(_ release: AppUpdateRelease) async throws {
+        installedRelease = release
+    }
 }
 
 private final class ControlledDownloadService: DownloadServicing {

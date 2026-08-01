@@ -596,9 +596,18 @@ private struct OtherSettingsTab: View {
                     Spacer()
                     Text(store.currentVersion)
                 }
-                Button("检查更新") {
+                Button {
                     Task { await store.checkForUpdates() }
+                } label: {
+                    if store.isCheckingForUpdates {
+                        ProgressView()
+                            .controlSize(.small)
+                            .padding(.horizontal, 8)
+                    } else {
+                        Label("检查更新", systemImage: "arrow.clockwise")
+                    }
                 }
+                .disabled(store.isCheckingForUpdates || store.isDownloadingUpdate)
 
                 Button {
                     store.openGitHubRepo()
@@ -614,12 +623,31 @@ private struct OtherSettingsTab: View {
                 if store.updateAvailable, let v = store.latestVersion {
                     Text("新版本可用：\(v)")
                         .foregroundStyle(.blue)
-                    Button {
-                        Task { await store.downloadAndInstallUpdate() }
-                    } label: {
-                        Label(store.isDownloadingUpdate ? "下载中..." : "下载更新", systemImage: "arrow.down.circle.fill")
+                    if let notes = store.updateRelease?.notes.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !notes.isEmpty {
+                        Text(notes)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(6)
                     }
-                    .disabled(store.isDownloadingUpdate || store.updateDownloadURL == nil)
+                    if store.updateDownloadURL != nil {
+                        Button {
+                            Task { await store.downloadAndInstallUpdate() }
+                        } label: {
+                            Label(
+                                store.isDownloadingUpdate ? "下载并安装中..." : "安装并重启",
+                                systemImage: "arrow.down.circle.fill"
+                            )
+                        }
+                        .disabled(store.isDownloadingUpdate)
+                    } else {
+                        Text("当前 Release 未提供 ZIP 自动更新包，请手动安装。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("打开 Release 页面") {
+                        store.openLatestRelease()
+                    }
                 }
             }
         }

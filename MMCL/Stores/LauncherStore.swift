@@ -93,11 +93,16 @@ final class LauncherStore: ObservableObject {
         }
     }
 
-    let currentVersion = "0.1.0"
+    let currentVersion: String = (Bundle(identifier: "melody.MMCL") ?? Bundle.main).object(
+        forInfoDictionaryKey: "CFBundleShortVersionString"
+    ) as? String ?? "0.1.1"
     @Published var latestVersion: String?
     @Published var updateAvailable = false
     @Published var updateDownloadURL: URL?
     @Published var isDownloadingUpdate: Bool = false
+    @Published var isCheckingForUpdates: Bool = false
+    @Published var updateRelease: AppUpdateRelease?
+    @Published var updateReleaseURL: URL?
 
     @Published var colorScheme: AppColorScheme = .system
     @Published var appLanguage: AppLanguage = .chinese
@@ -137,6 +142,7 @@ final class LauncherStore: ObservableObject {
     private let versionService: VersionManifestServicing
     private let javaRuntimeService: JavaRuntimeServicing
     private let portableJDKInstaller: PortableJDKInstalling
+    private let appUpdateService: AppUpdateServicing
     private let instanceService: InstanceServicing
     private let fabricService: FabricServicing
     private let quiltService: QuiltServicing
@@ -163,6 +169,7 @@ final class LauncherStore: ObservableObject {
         versionService: VersionManifestServicing? = nil,
         javaRuntimeService: JavaRuntimeServicing? = nil,
         portableJDKInstaller: PortableJDKInstalling? = nil,
+        appUpdateService: AppUpdateServicing? = nil,
         instanceService: InstanceServicing? = nil,
         fabricService: FabricServicing? = nil,
         quiltService: QuiltServicing? = nil,
@@ -181,6 +188,7 @@ final class LauncherStore: ObservableObject {
         let resolvedVersionService = versionService ?? VersionManifestService()
         let resolvedJavaRuntimeService = javaRuntimeService ?? JavaRuntimeService()
         let resolvedPortableJDKInstaller = portableJDKInstaller ?? PortableJDKInstaller()
+        let resolvedAppUpdateService = appUpdateService ?? AppUpdateService()
         let resolvedInstanceService = instanceService ?? InstanceService()
         let resolvedFabricService = fabricService ?? FabricService()
         let resolvedQuiltService = quiltService ?? QuiltService()
@@ -212,6 +220,7 @@ final class LauncherStore: ObservableObject {
         self.versionService = resolvedVersionService
         self.javaRuntimeService = resolvedJavaRuntimeService
         self.portableJDKInstaller = resolvedPortableJDKInstaller
+        self.appUpdateService = resolvedAppUpdateService
         self.instanceService = resolvedInstanceService
         self.fabricService = resolvedFabricService
         self.quiltService = resolvedQuiltService
@@ -1427,72 +1436,86 @@ extension LauncherStore {
         }
     }
 
-    func checkForUpdates() async {
-        guard let url = URL(string: "https://api.github.com/repos/Lhy723/MMCL/releases/latest") else { return }
+    func checkForUpdates(showDiagnostics: Bool = true) async {
+        guard !isCheckingForUpdates else { return }
+        isCheckingForUpdates = true
+        defer { isCheckingForUpdates = false }
+
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            let tagName = json?["tag_name"] as? String ?? ""
-            guard let latest = SemanticVersion(tagName),
-                  let current = SemanticVersion(currentVersion),
-                  latest > current else {
-                latestVersion = nil
-                updateAvailable = false
-                updateDownloadURL = nil
+            let release = try await appUpdateService.fetchLatestRelease()
+            guard let current = SemanticVersion(currentVersion), release.version > current else {
+                clearUpdateState()
+                if showDiagnostics {
+                    removeUpdateDiagnostics()
+                    diagnostics.insert(
+                        DiagnosticReport(
+                            title: "已是最新版本",
+                            severity: .info,
+                            summary: "当前版本 \(currentVersion) 已是最新版本。",
+                            suggestedActions: []
+                        ),
+                        at: 0
+                    )
+                }
                 return
             }
 
-            let version = latest.description
+            let version = release.version.description
             latestVersion = version
+            updateRelease = release
+            updateReleaseURL = release.htmlURL
+            updateDownloadURL = release.automaticAsset?.browserDownloadURL
             updateAvailable = true
-            updateDownloadURL = nil
 
-            // Find downloadable asset (DMG or ZIP)
-            if let assets = json?["assets"] as? [[String: Any]] {
-                updateDownloadURL = assets.compactMap { asset -> URL? in
-                    guard let name = asset["name"] as? String,
-                          let browserURL = asset["browser_download_url"] as? String,
-                          name.hasSuffix(".dmg") || name.hasSuffix(".zip"),
-                          let url = URL(string: browserURL) else { return nil }
-                    return url
-                }.first
+            if showDiagnostics {
+                removeUpdateDiagnostics()
+                let action = release.automaticAsset == nil
+                    ? "当前 Release 没有 ZIP 自动更新包，请打开 Release 页面手动安装。"
+                    : "点击「安装并重启」自动替换应用。"
+                diagnostics.insert(
+                    DiagnosticReport(
+                        title: "发现新版本",
+                        severity: .info,
+                        summary: "最新版本 \(version)，当前版本 \(currentVersion)。\(action)",
+                        suggestedActions: ["查看 Release 说明", "安装更新"]
+                    ),
+                    at: 0
+                )
             }
-
-            diagnostics.insert(
-                DiagnosticReport(title: "发现新版本", severity: .info, summary: "最新版本 \(version)，当前版本 \(currentVersion)。", suggestedActions: ["点击「下载更新」获取最新版本"]),
-                at: 0
-            )
         } catch {
-            // Silent fail for update check
+            clearUpdateState()
+            if showDiagnostics {
+                removeUpdateDiagnostics()
+                diagnostics.insert(
+                    DiagnosticReport(
+                        title: "检查更新失败",
+                        severity: .error,
+                        summary: error.localizedDescription,
+                        suggestedActions: ["检查网络连接后重试", "前往 GitHub 手动检查"]
+                    ),
+                    at: 0
+                )
+            }
         }
     }
 
+    func openLatestRelease() {
+        let url = updateReleaseURL ?? URL(string: "\(githubRepoURL)/releases")!
+        NSWorkspace.shared.open(url)
+    }
+
     func downloadAndInstallUpdate() async {
-        guard let downloadURL = updateDownloadURL else { return }
+        guard let release = updateRelease else { return }
         isDownloadingUpdate = true
         defer { isDownloadingUpdate = false }
 
         do {
-            let (tempURL, _) = try await URLSession.shared.download(from: downloadURL)
-            let fileName = downloadURL.lastPathComponent
-            let destURL = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
-
-            if FileManager.default.fileExists(atPath: destURL.path) {
-                try FileManager.default.removeItem(at: destURL)
-            }
-            try FileManager.default.moveItem(at: tempURL, to: destURL)
-
-            // Open the downloaded file (DMG mounts, ZIP opens in Finder)
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            process.arguments = [destURL.path]
-            try process.run()
-
+            try await appUpdateService.installUpdate(release)
             diagnostics.insert(
                 DiagnosticReport(
-                    title: "更新已下载",
+                    title: "更新准备完成",
                     severity: .info,
-                    summary: "\(fileName) 已下载到临时目录并打开。请按照提示完成安装。",
+                    summary: "MMCL \(release.version.description) 即将替换当前版本并自动重启。",
                     suggestedActions: []
                 ),
                 at: 0
@@ -1500,13 +1523,29 @@ extension LauncherStore {
         } catch {
             diagnostics.insert(
                 DiagnosticReport(
-                    title: "更新下载失败",
+                    title: "更新安装失败",
                     severity: .error,
                     summary: error.localizedDescription,
-                    suggestedActions: ["检查网络连接后重试", "前往 GitHub 手动下载"]
+                    suggestedActions: ["确认 MMCL 安装在可写目录后重试", "打开 GitHub Release 手动下载"]
                 ),
                 at: 0
             )
+        }
+    }
+
+    private func clearUpdateState() {
+        latestVersion = nil
+        updateAvailable = false
+        updateDownloadURL = nil
+        updateRelease = nil
+        updateReleaseURL = nil
+    }
+
+    private func removeUpdateDiagnostics() {
+        diagnostics.removeAll { report in
+            report.title == "发现新版本" ||
+                report.title == "已是最新版本" ||
+                report.title == "检查更新失败"
         }
     }
 

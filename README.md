@@ -14,6 +14,8 @@
 macOS 原生 Minecraft 启动器，基于 SwiftUI 构建，参考 PCL 交互设计。
 支持 版本管理、Mod/资源包/光影包管理、Modrinth/CurseForge 搜索下载、Microsoft 账号登录、多实例管理。
 
+当前稳定版本：[0.1.1](https://github.com/Lhy723/MMCL/releases/tag/v0.1.1)
+
 <br>
 
 <h4>启动页</h4>
@@ -28,7 +30,7 @@ macOS 原生 Minecraft 启动器，基于 SwiftUI 构建，参考 PCL 交互设�
 
 ## 功能特性 🎯
 
-- [x] **macOS 原生体验**，基于 SwiftUI + macOS 26 Liquid Glass 设计
+- [x] **macOS 原生体验**，基于 SwiftUI，支持 macOS 14.0+
 - [x] **多实例管理**，支持创建、复制、重命名、删除实例
 - [x] **版本管理**，支持 Vanilla、Fabric、Quilt、Forge、NeoForge
 - [x] **Mod 管理**，本地启用/禁用/删除，支持 .jar/.disabled 切换
@@ -46,7 +48,7 @@ macOS 原生 Minecraft 启动器，基于 SwiftUI 构建，参考 PCL 交互设�
 - [x] **服务器列表**，多人游戏服务器管理
 - [x] **自定义背景**，支持自定义启动器背景图片
 - [x] **多语言**，支持中文界面
-- [x] **自动更新**，支持从 GitHub Releases 检查更新
+- [x] **自动更新**，从 GitHub Releases 检查 ZIP 更新包，验证后自动替换并重启
 
 ## 系统要求 📦
 
@@ -69,6 +71,15 @@ macOS 原生 Minecraft 启动器，基于 SwiftUI 构建，参考 PCL 交互设�
 > ```shell
 > xattr -cr /Applications/MMCL.app
 > ```
+
+### 自动更新
+
+MMCL 启动时会从 [GitHub Releases](https://github.com/Lhy723/MMCL/releases) 检查最新正式版。Release 同时提供 `.zip` 和 `.dmg`：
+
+- `.zip` 用于应用内自动更新。下载后会校验应用包、版本号和可执行文件，等待当前进程退出后替换并自动重启。
+- `.dmg` 用于手动安装或自动更新失败时的兜底方案。
+
+如果应用安装在不可写目录，自动更新会失败，请将 MMCL 放在用户有写权限的目录（例如用户自己的 `~/Applications` 文件夹）；系统级 `/Applications` 是否可写取决于当前账户权限。
 
 ### 方式二：从源码构建
 
@@ -116,6 +127,10 @@ CurseForge 需要单独的 API Key：
 2. 打开「设置 → 其他」，输入 API Key
 3. 搜索时选择 CurseForge 来源即可
 
+## 版本记录
+
+完整变更记录见 [CHANGELOG.md](CHANGELOG.md)。0.1.1 相较于 0.1.0 主要修复账号启动、加载器安装、下载队列、资源索引、Mod 操作和便携 JDK 安装问题，并完善了应用内 GitHub Release 自动更新。
+
 ## 项目结构 📁
 
 ```
@@ -135,7 +150,7 @@ MMCL/
 采用 **Models → Services → Store → Views** 分层架构：
 
 - **Models**：所有数据类型定义（`LauncherInstance`、`DownloadJob`、`JavaRuntime` 等）
-- **Services**：协议化服务层，支持依赖注入和 Mock 测试
+- **Services**：协议化服务层，支持依赖注入和 Mock 测试；`AppUpdateService` 负责 GitHub Release 检查、ZIP 校验、替换和重启
 - **Store**：单一 `ObservableObject`，管理所有应用状态
 - **Views**：SwiftUI 视图，`NavigationSplitView` 布局
 

@@ -67,7 +67,7 @@ struct ContentView: View {
                     store.verifyInstanceStatuses()
                 }
                 await store.refreshJavaRuntimes()
-                await store.checkForUpdates()
+                await store.checkForUpdates(showDiagnostics: false)
             }
         }
         .onChange(of: store.launcherSelectedInstanceID) { _, newID in

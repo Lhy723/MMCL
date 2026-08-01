@@ -39,6 +39,7 @@ MMCL (Melody Minecraft Launcher) — macOS Minecraft launcher. SwiftUI app with 
   - `ModrinthServicing` — Modrinth search, project details, version download
   - `CurseForgeServicing` — CurseForge mod search (requires API key)
   - `AuthServicing` — Microsoft OAuth device code flow, XBL/XSTS/Minecraft token exchange
+  - `AppUpdateServicing` — GitHub Release 检查、ZIP 更新包验证、应用替换和自动重启
 - **Store** (`MMCL/Stores/LauncherStore.swift`): `@MainActor` `ObservableObject` holding all app state. Orchestrates services, manages downloads, process monitoring, account management. All `@Published` modifications must happen on main actor.
 - **Views** (`MMCL/Views/`): SwiftUI views. `NavigationSplitView` layout with sidebar + detail + sheets.
   - `LauncherView` — instance picker, launch button, instance card with block icon
@@ -69,6 +70,7 @@ MMCL (Melody Minecraft Launcher) — macOS Minecraft launcher. SwiftUI app with 
 - Apple Silicon auto-detection: ZGC + optimized JVM args for arm64
 - Downloads execute concurrently via `TaskGroup` (max 4 parallel)
 - Microsoft auth uses device code flow (browser-based OAuth)
+- App updates use the latest stable GitHub Release API endpoint; ZIP assets are validated and installed by a detached restart helper, with DMG retained for manual fallback
 - Mod management: toggle by renaming `.jar` ↔ `.jar.disabled`
 - Instance status verified against actual files on disk at startup
 - Block icons: Grass (release), CommandBlock (snapshot), CobbleStone (old), Anvil (Forge), NeoForge, Fabric, Egg (Quilt)
