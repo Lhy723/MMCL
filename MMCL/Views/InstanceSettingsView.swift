@@ -67,19 +67,24 @@ struct InstanceSettingsView: View {
 
     private var javaSection: some View {
         Section("Java 运行时") {
-            Picker("运行时", selection: $store.selectedJavaRuntimeID) {
-                Text("自动选择").tag(JavaRuntime.ID?.none)
+            Picker("运行时", selection: javaRuntimeSelection) {
+                Text("自动选择（按实例版本）").tag(JavaRuntime.ID?.none)
                 ForEach(store.javaRuntimes) { runtime in
                     Text(runtime.displayName).tag(Optional(runtime.id))
                 }
             }
             .pickerStyle(.menu)
 
-            if let runtime = store.selectedJavaRuntime {
+            LabeledContent("选择模式", value: instance.profile.javaSelectionMode.label)
+
+            if let runtime = store.javaRuntime(for: instance) {
                 LabeledContent("版本", value: runtime.version)
                 LabeledContent("架构", value: runtime.architecture.label)
                 LabeledContent("匹配", value: runtime.isRecommended(for: instance.gameVersion) ? "推荐" : "不推荐")
                     .foregroundStyle(runtime.isRecommended(for: instance.gameVersion) ? .green : .orange)
+            } else if instance.profile.javaSelectionMode == .manual {
+                Text("手动选择的 Java 当前不可用，请重新扫描或改为自动选择")
+                    .foregroundStyle(.orange)
             } else {
                 Text("未发现 Java 运行时")
                     .foregroundStyle(.secondary)
@@ -219,6 +224,18 @@ struct InstanceSettingsView: View {
 
     // MARK: - Helpers
 
+    private var javaRuntimeSelection: Binding<JavaRuntime.ID?> {
+        Binding(
+            get: {
+                guard instance.profile.javaSelectionMode == .manual else { return nil }
+                return instance.profile.javaRuntimeID
+            },
+            set: { runtimeID in
+                store.setJavaSelection(for: instance, runtimeID: runtimeID)
+            }
+        )
+    }
+
     private func saveProfile() {
         let args = jvmArgumentsText
             .components(separatedBy: .whitespaces)
@@ -230,7 +247,10 @@ struct InstanceSettingsView: View {
             resolutionWidth: instance.profile.resolutionWidth,
             resolutionHeight: instance.profile.resolutionHeight,
             useGeneratedJVMArguments: useGeneratedJVMArguments,
-            useOptimizingJVMArguments: useOptimizingJVMArguments
+            useOptimizingJVMArguments: useOptimizingJVMArguments,
+            javaSelectionMode: instance.profile.javaSelectionMode,
+            javaRuntimeID: instance.profile.javaRuntimeID,
+            javaRuntimePath: instance.profile.javaRuntimePath
         ))
     }
 

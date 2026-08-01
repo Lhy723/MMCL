@@ -85,12 +85,17 @@ struct InstanceDetailView: View {
 
     private var runtimeContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Picker("运行时", selection: $store.selectedJavaRuntimeID) {
+            Picker("运行时", selection: javaRuntimeSelection) {
+                Text("自动选择（按实例版本）").tag(JavaRuntime.ID?.none)
                 ForEach(store.javaRuntimes) { runtime in
                     Text(runtime.displayName).tag(Optional(runtime.id))
                 }
             }
             .pickerStyle(.menu)
+
+            Text("选择模式：\(instance.profile.javaSelectionMode.label)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             Button {
                 Task { await store.refreshJavaRuntimes() }
@@ -105,7 +110,7 @@ struct InstanceDetailView: View {
             .buttonStyle(.bordered)
             .disabled(store.isScanningJava)
 
-            if let runtime = store.selectedJavaRuntime {
+            if let runtime = store.javaRuntime(for: instance) {
                 Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 10) {
                     GridRow {
                         Text("版本").foregroundStyle(.secondary)
@@ -125,10 +130,24 @@ struct InstanceDetailView: View {
                     }
                 }
             } else {
-                Text("尚未发现 Java 运行时。")
+                Text(instance.profile.javaSelectionMode == .manual
+                    ? "手动选择的 Java 当前不可用。"
+                    : "尚未发现 Java 运行时。")
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var javaRuntimeSelection: Binding<JavaRuntime.ID?> {
+        Binding(
+            get: {
+                guard instance.profile.javaSelectionMode == .manual else { return nil }
+                return instance.profile.javaRuntimeID
+            },
+            set: { runtimeID in
+                store.setJavaSelection(for: instance, runtimeID: runtimeID)
+            }
+        )
     }
 
     private var launchPreviewContent: some View {

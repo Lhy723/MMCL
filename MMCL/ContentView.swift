@@ -74,6 +74,7 @@ struct ContentView: View {
             if let id = newID {
                 UserDefaults.standard.set(id.uuidString, forKey: "lastSelectedInstanceID")
             }
+            store.recalculateJavaSelectionForSelectedInstance()
         }
         .sheet(isPresented: $store.showingCreateSheet) {
             InstanceCreateSheet(store: store)

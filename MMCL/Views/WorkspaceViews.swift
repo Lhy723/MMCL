@@ -228,11 +228,20 @@ private struct LaunchSettingsTab: View {
             }
 
             Section("游戏 Java") {
-                Picker("运行时", selection: $store.selectedJavaRuntimeID) {
-                    Text("自动检测").tag(JavaRuntime.ID?.none)
+                Picker("运行时", selection: javaRuntimeSelection) {
+                    Text("自动选择（按当前实例）").tag(JavaRuntime.ID?.none)
                     ForEach(store.javaRuntimes) { runtime in
                         Text(runtime.displayName).tag(Optional(runtime.id))
                     }
+                }
+                .disabled(store.selectedInstance == nil)
+
+                if let instance = store.selectedInstance {
+                    LabeledContent("当前实例", value: instance.name)
+                    LabeledContent("选择模式", value: instance.profile.javaSelectionMode.label)
+                } else {
+                    Text("请先选择实例，再设置该实例的 Java")
+                        .foregroundStyle(.secondary)
                 }
 
                 Button {
@@ -362,9 +371,23 @@ private struct LaunchSettingsTab: View {
                 }
             }
         }
+
         .formStyle(.grouped)
         .animation(.mmclSpring(response: 0.35, dampingFraction: 0.85, scale: store.animationDurationScale), value: store.windowSizeMode)
         .animation(.mmclSpring(response: 0.35, dampingFraction: 0.85, scale: store.animationDurationScale), value: store.memoryAutoConfig)
+    }
+
+    private var javaRuntimeSelection: Binding<JavaRuntime.ID?> {
+        Binding(
+            get: {
+                guard let instance = store.selectedInstance,
+                      instance.profile.javaSelectionMode == .manual else { return nil }
+                return instance.profile.javaRuntimeID
+            },
+            set: { runtimeID in
+                store.setJavaSelectionForSelectedInstance(runtimeID: runtimeID)
+            }
+        )
     }
 }
 

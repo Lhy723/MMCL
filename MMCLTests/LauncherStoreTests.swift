@@ -193,8 +193,145 @@ final class LauncherStoreTests: XCTestCase {
         await store.refreshJavaRuntimes()
 
         XCTAssertEqual(store.javaRuntimes.map(\.majorVersion), [17, 21])
-        XCTAssertEqual(store.selectedJavaRuntimeID, java21.id)
+        XCTAssertEqual(store.selectedJavaRuntime?.id, java21.id)
         XCTAssertEqual(store.diagnostics.first?.title, "Java 运行时已刷新")
+    }
+
+    @MainActor
+    func testAutomaticJavaSelectionRecalculatesWhenSwitchingInstances() {
+        let modernID = UUID()
+        let legacyID = UUID()
+        let modern = LauncherInstance(
+            id: modernID,
+            name: "新版本",
+            gameVersion: "1.21.5",
+            loader: .vanilla,
+            rootDirectory: URL(fileURLWithPath: "/Users/example/Instances/modern")
+        )
+        let legacy = LauncherInstance(
+            id: legacyID,
+            name: "旧版本",
+            gameVersion: "1.16.5",
+            loader: .vanilla,
+            rootDirectory: URL(fileURLWithPath: "/Users/example/Instances/legacy")
+        )
+        let java8 = JavaRuntime(
+            name: "Temurin 8",
+            version: "8.0.402",
+            majorVersion: 8,
+            architecture: .arm64,
+            executableURL: URL(fileURLWithPath: "/Library/Java/JavaVirtualMachines/temurin-8.jdk/Contents/Home/bin/java")
+        )
+        let java21 = JavaRuntime(
+            name: "Temurin 21",
+            version: "21.0.3",
+            majorVersion: 21,
+            architecture: .arm64,
+            executableURL: URL(fileURLWithPath: "/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home/bin/java")
+        )
+        let store = LauncherStore(
+            instances: [modern, legacy],
+            downloadJobs: [],
+            featuredProjects: [],
+            diagnostics: [],
+            javaRuntimes: [java8, java21],
+            availableVersions: [],
+            javaRuntimeService: StubJavaRuntimeService(runtimes: [java8, java21])
+        )
+
+        store.launcherSelectedInstanceID = modernID
+        store.recalculateJavaSelectionForSelectedInstance()
+        XCTAssertEqual(store.selectedJavaRuntime?.id, java21.id)
+
+        store.launcherSelectedInstanceID = legacyID
+        store.recalculateJavaSelectionForSelectedInstance()
+
+        XCTAssertEqual(store.selectedJavaRuntime?.id, java8.id)
+        XCTAssertEqual(store.selectedJavaRuntime?.majorVersion, 8)
+        XCTAssertEqual(store.selectedInstance?.profile.javaSelectionMode, .automatic)
+    }
+
+    @MainActor
+    func testManualJavaSelectionIsStoredPerInstance() throws {
+        let instanceRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MMCL-Java-selection-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: instanceRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: instanceRoot) }
+
+        let instanceService = MockInstanceService()
+        let instance = LauncherInstance(
+            name: "可手动选择 Java 的实例",
+            gameVersion: "1.21.5",
+            loader: .vanilla,
+            rootDirectory: instanceRoot
+        )
+        let java8 = JavaRuntime(
+            name: "Temurin 8",
+            version: "8.0.402",
+            majorVersion: 8,
+            architecture: .arm64,
+            executableURL: URL(fileURLWithPath: "/Library/Java/JavaVirtualMachines/temurin-8.jdk/Contents/Home/bin/java")
+        )
+        let java21 = JavaRuntime(
+            name: "Temurin 21",
+            version: "21.0.3",
+            majorVersion: 21,
+            architecture: .arm64,
+            executableURL: URL(fileURLWithPath: "/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home/bin/java")
+        )
+        let store = LauncherStore(
+            instances: [instance],
+            downloadJobs: [],
+            featuredProjects: [],
+            diagnostics: [],
+            javaRuntimes: [java8, java21],
+            availableVersions: [],
+            javaRuntimeService: StubJavaRuntimeService(runtimes: [java8, java21]),
+            instanceService: instanceService
+        )
+        store.launcherSelectedInstanceID = instance.id
+
+        store.setJavaSelection(for: instance, runtimeID: java8.id)
+
+        XCTAssertEqual(store.selectedJavaRuntimeID, java8.id)
+        XCTAssertEqual(store.selectedInstance?.profile.javaSelectionMode, .manual)
+        XCTAssertEqual(store.selectedInstance?.profile.javaRuntimeID, java8.id)
+        XCTAssertEqual(
+            store.selectedInstance?.profile.javaRuntimePath,
+            java8.executableURL.standardizedFileURL.path
+        )
+
+        let persistedData = try Data(contentsOf: instanceService.instanceFileURL(for: instance))
+        let persistedInstance = try instanceService.decode(from: persistedData)
+        XCTAssertEqual(persistedInstance.profile.javaSelectionMode, .manual)
+        XCTAssertEqual(persistedInstance.profile.javaRuntimeID, java8.id)
+        XCTAssertEqual(persistedInstance.profile.javaRuntimePath, java8.executableURL.standardizedFileURL.path)
+
+        let rescannedJava8 = JavaRuntime(
+            name: "Temurin 8",
+            version: "8.0.402",
+            majorVersion: 8,
+            architecture: .arm64,
+            executableURL: java8.executableURL
+        )
+        let reloadedStore = LauncherStore(
+            instances: [persistedInstance],
+            downloadJobs: [],
+            featuredProjects: [],
+            diagnostics: [],
+            javaRuntimes: [rescannedJava8],
+            availableVersions: [],
+            javaRuntimeService: StubJavaRuntimeService(runtimes: [rescannedJava8]),
+            instanceService: instanceService
+        )
+        reloadedStore.launcherSelectedInstanceID = instance.id
+        XCTAssertEqual(reloadedStore.selectedJavaRuntime?.executableURL, java8.executableURL)
+
+        store.setJavaSelection(for: instance, runtimeID: Optional<JavaRuntime.ID>.none)
+
+        XCTAssertEqual(store.selectedInstance?.profile.javaSelectionMode, .automatic)
+        XCTAssertNil(store.selectedInstance?.profile.javaRuntimeID)
+        XCTAssertEqual(store.selectedJavaRuntime?.id, java21.id)
     }
 
     @MainActor

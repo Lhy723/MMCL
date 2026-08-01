@@ -330,6 +330,22 @@ enum InstanceStatus: String, Codable {
     }
 }
 
+enum JavaSelectionMode: String, Codable, CaseIterable, Identifiable {
+    case automatic
+    case manual
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .automatic:
+            return "自动选择"
+        case .manual:
+            return "手动选择"
+        }
+    }
+}
+
 struct LaunchProfile: Codable, Equatable {
     var offlineUsername: String
     var memoryMegabytes: Int
@@ -341,6 +357,15 @@ struct LaunchProfile: Codable, Equatable {
     var useGeneratedJVMArguments: Bool
     /// Adds the optional G1/JIT tuning defaults inspired by HMCL.
     var useOptimizingJVMArguments: Bool
+    /// Selects a Java runtime for this instance. Automatic mode is resolved
+    /// against the instance's Minecraft version and the current machine.
+    var javaSelectionMode: JavaSelectionMode
+    /// The runtime selected in manual mode. It may be unavailable until Java
+    /// discovery runs again, so manual mode is intentionally preserved.
+    var javaRuntimeID: JavaRuntime.ID?
+    /// Stable fallback identity for runtimes, because discovered runtime IDs
+    /// are regenerated when Java is scanned again.
+    var javaRuntimePath: String?
 
     private enum CodingKeys: String, CodingKey {
         case offlineUsername
@@ -350,6 +375,9 @@ struct LaunchProfile: Codable, Equatable {
         case resolutionHeight
         case useGeneratedJVMArguments
         case useOptimizingJVMArguments
+        case javaSelectionMode
+        case javaRuntimeID
+        case javaRuntimePath
     }
 
     init(
@@ -359,7 +387,10 @@ struct LaunchProfile: Codable, Equatable {
         resolutionWidth: Int,
         resolutionHeight: Int,
         useGeneratedJVMArguments: Bool = true,
-        useOptimizingJVMArguments: Bool = true
+        useOptimizingJVMArguments: Bool = true,
+        javaSelectionMode: JavaSelectionMode = .automatic,
+        javaRuntimeID: JavaRuntime.ID? = nil,
+        javaRuntimePath: String? = nil
     ) {
         self.offlineUsername = offlineUsername
         self.memoryMegabytes = memoryMegabytes
@@ -368,10 +399,15 @@ struct LaunchProfile: Codable, Equatable {
         self.resolutionHeight = resolutionHeight
         self.useGeneratedJVMArguments = useGeneratedJVMArguments
         self.useOptimizingJVMArguments = useOptimizingJVMArguments
+        self.javaSelectionMode = javaSelectionMode
+        self.javaRuntimeID = javaSelectionMode == .automatic ? nil : javaRuntimeID
+        self.javaRuntimePath = javaSelectionMode == .automatic ? nil : javaRuntimePath
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let javaRuntimeID = try container.decodeIfPresent(JavaRuntime.ID.self, forKey: .javaRuntimeID)
+        let javaRuntimePath = try container.decodeIfPresent(String.self, forKey: .javaRuntimePath)
         self.init(
             offlineUsername: try container.decode(String.self, forKey: .offlineUsername),
             memoryMegabytes: try container.decode(Int.self, forKey: .memoryMegabytes),
@@ -379,7 +415,11 @@ struct LaunchProfile: Codable, Equatable {
             resolutionWidth: try container.decode(Int.self, forKey: .resolutionWidth),
             resolutionHeight: try container.decode(Int.self, forKey: .resolutionHeight),
             useGeneratedJVMArguments: try container.decodeIfPresent(Bool.self, forKey: .useGeneratedJVMArguments) ?? true,
-            useOptimizingJVMArguments: try container.decodeIfPresent(Bool.self, forKey: .useOptimizingJVMArguments) ?? true
+            useOptimizingJVMArguments: try container.decodeIfPresent(Bool.self, forKey: .useOptimizingJVMArguments) ?? true,
+            javaSelectionMode: try container.decodeIfPresent(JavaSelectionMode.self, forKey: .javaSelectionMode)
+                ?? (javaRuntimeID == nil && javaRuntimePath == nil ? .automatic : .manual),
+            javaRuntimeID: javaRuntimeID,
+            javaRuntimePath: javaRuntimePath
         )
     }
 
@@ -392,6 +432,9 @@ struct LaunchProfile: Codable, Equatable {
         try container.encode(resolutionHeight, forKey: .resolutionHeight)
         try container.encode(useGeneratedJVMArguments, forKey: .useGeneratedJVMArguments)
         try container.encode(useOptimizingJVMArguments, forKey: .useOptimizingJVMArguments)
+        try container.encode(javaSelectionMode, forKey: .javaSelectionMode)
+        try container.encodeIfPresent(javaRuntimeID, forKey: .javaRuntimeID)
+        try container.encodeIfPresent(javaRuntimePath, forKey: .javaRuntimePath)
     }
 
     static let `default` = LaunchProfile(

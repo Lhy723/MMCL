@@ -23,7 +23,17 @@ final class LauncherStore: ObservableObject {
     @Published var launcherSelectedInstanceID: LauncherInstance.ID?
     @Published var selectedDownloadSource: DownloadSource
     @Published var selectedDownloadTab: DownloadTabType = .vanilla
-    @Published var selectedJavaRuntimeID: JavaRuntime.ID?
+    /// The selected runtime is stored in the selected instance's profile.
+    /// Keep this property as a compatibility-facing binding for callers that
+    /// still read or write the old store-level selection.
+    var selectedJavaRuntimeID: JavaRuntime.ID? {
+        get {
+            guard let selectedInstance,
+                  selectedInstance.profile.javaSelectionMode == .manual else { return nil }
+            return javaRuntime(for: selectedInstance)?.id ?? selectedInstance.profile.javaRuntimeID
+        }
+        set { setJavaSelectionForSelectedInstance(runtimeID: newValue) }
+    }
     @Published var currentLaunchSession: LaunchSession?
     @Published var plannedVersionMetadata: VersionMetadata?
     @Published var plannedInstanceID: LauncherInstance.ID?
@@ -233,7 +243,6 @@ final class LauncherStore: ObservableObject {
         self.skinService = resolvedSkinService
         self.serverListService = resolvedServerListService
         self.accountPersistence = resolvedAccountPersistence
-        self.selectedJavaRuntimeID = javaRuntimes.first?.id
         self.selectedSection = .launcher
 
         // Restore last selected instance
@@ -290,6 +299,7 @@ final class LauncherStore: ObservableObject {
             selectedSection = .launcher
             launcherSelectedInstanceID = instances.first?.id
         }
+        recalculateJavaSelectionForSelectedInstance()
     }
 
     func startMicrosoftLogin() async {
@@ -543,6 +553,36 @@ final class LauncherStore: ObservableObject {
         guard let index = instances.firstIndex(where: { $0.id == instance.id }) else { return }
         instances[index].profile = profile
         persistInstance(at: index)
+        if instances[index].id == launcherSelectedInstanceID {
+            recalculateJavaSelectionForSelectedInstance()
+        }
+    }
+
+    func setJavaSelection(for instance: LauncherInstance, runtimeID: JavaRuntime.ID?) {
+        guard let index = instances.firstIndex(where: { $0.id == instance.id }) else { return }
+        instances[index].profile.javaSelectionMode = runtimeID == nil ? .automatic : .manual
+        instances[index].profile.javaRuntimeID = runtimeID
+        instances[index].profile.javaRuntimePath = runtimeID
+            .flatMap { runtimeID in
+                javaRuntimes.first { $0.id == runtimeID }?.executableURL.standardizedFileURL.path
+            }
+        persistInstance(at: index)
+
+        if instances[index].id == launcherSelectedInstanceID {
+            recalculateJavaSelectionForSelectedInstance()
+        }
+    }
+
+    func setJavaSelectionForSelectedInstance(runtimeID: JavaRuntime.ID?) {
+        guard let selectedInstance else { return }
+        setJavaSelection(for: selectedInstance, runtimeID: runtimeID)
+    }
+
+    /// Re-evaluates the selected instance's automatic Java choice after an
+    /// instance switch or a runtime scan. The actual value is derived from
+    /// the current instance and runtime list, so it cannot become stale.
+    func recalculateJavaSelectionForSelectedInstance() {
+        objectWillChange.send()
     }
 
     private func persistInstance(at index: Int) {
@@ -795,8 +835,8 @@ extension LauncherStore {
 
 extension LauncherStore {
     var selectedJavaRuntime: JavaRuntime? {
-        guard let selectedJavaRuntimeID else { return javaRuntimes.first }
-        return javaRuntimes.first { $0.id == selectedJavaRuntimeID } ?? javaRuntimes.first
+        guard let selectedInstance else { return nil }
+        return javaRuntime(for: selectedInstance)
     }
 
     /// Returns the JVM arguments contributed by enabled global presets.
@@ -1196,7 +1236,7 @@ extension LauncherStore {
         do {
             let runtimes = try await javaRuntimeService.discoverInstalledRuntimes()
             javaRuntimes = runtimes
-            selectRecommendedJavaRuntime()
+            recalculateJavaSelectionForSelectedInstance()
             diagnostics.insert(
                 DiagnosticReport(
                     title: "Java 运行时已刷新",
@@ -1208,7 +1248,7 @@ extension LauncherStore {
             )
         } catch {
             javaRuntimes = []
-            selectedJavaRuntimeID = nil
+            recalculateJavaSelectionForSelectedInstance()
             diagnostics.insert(
                 DiagnosticReport(
                     title: "Java 扫描失败",
@@ -1288,31 +1328,38 @@ extension LauncherStore {
         }
     }
 
-    private func selectRecommendedJavaRuntime() {
-        let systemArchitecture = RuntimeArchitecture.currentSystem
-        guard let selectedInstance else {
-            selectedJavaRuntimeID = javaRuntimes
-                .sorted {
-                    javaArchitecturePreference($0, systemArchitecture: systemArchitecture)
-                        < javaArchitecturePreference($1, systemArchitecture: systemArchitecture)
-                }
-                .first?.id
-            return
+    func javaRuntime(for instance: LauncherInstance) -> JavaRuntime? {
+        switch instance.profile.javaSelectionMode {
+        case .automatic:
+            return recommendedJavaRuntime(for: instance)
+        case .manual:
+            if let runtimeID = instance.profile.javaRuntimeID,
+               let runtime = javaRuntimes.first(where: { $0.id == runtimeID }) {
+                return runtime
+            }
+            guard let runtimePath = instance.profile.javaRuntimePath else { return nil }
+            return javaRuntimes.first {
+                $0.executableURL.standardizedFileURL.path == runtimePath
+            }
         }
-        let recommendedMajor = javaRuntimeService.recommendedMajorVersion(for: selectedInstance.gameVersion)
+    }
+
+    private func recommendedJavaRuntime(for instance: LauncherInstance) -> JavaRuntime? {
+        let systemArchitecture = RuntimeArchitecture.currentSystem
+        let recommendedMajor = javaRuntimeService.recommendedMajorVersion(for: instance.gameVersion)
         let candidates = javaRuntimes.filter { $0.majorVersion == recommendedMajor }
-        selectedJavaRuntimeID = candidates
+        return candidates
             .sorted {
                 javaArchitecturePreference($0, systemArchitecture: systemArchitecture)
                     < javaArchitecturePreference($1, systemArchitecture: systemArchitecture)
             }
-            .first?.id
+            .first
             ?? javaRuntimes
                 .sorted {
                     javaArchitecturePreference($0, systemArchitecture: systemArchitecture)
                         < javaArchitecturePreference($1, systemArchitecture: systemArchitecture)
                 }
-                .first?.id
+                .first
     }
 
     private func javaArchitecturePreference(
