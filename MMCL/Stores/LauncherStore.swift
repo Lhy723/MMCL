@@ -799,6 +799,81 @@ extension LauncherStore {
         return javaRuntimes.first { $0.id == selectedJavaRuntimeID } ?? javaRuntimes.first
     }
 
+    /// Returns the JVM arguments contributed by enabled global presets.
+    ///
+    /// Presets selecting the same garbage collector can be combined (for
+    /// example, G1GC with the Apple Silicon tuning preset). Presets selecting
+    /// different collectors are reduced to the last enabled collector family
+    /// so a stale/imported settings file cannot produce both G1 and ZGC flags.
+    var enabledJVMArguments: [String] {
+        let enabledPresets = jvmPresets.filter(\.isEnabled)
+        let selectedCollectorFamily = enabledPresets
+            .compactMap { garbageCollectorFamily(for: $0) }
+            .last
+
+        var seenArguments = Set<String>()
+        return enabledPresets
+            .filter { preset in
+                guard let selectedCollectorFamily,
+                      let presetCollectorFamily = garbageCollectorFamily(for: preset) else {
+                    return true
+                }
+                return presetCollectorFamily == selectedCollectorFamily
+            }
+            .flatMap(\.arguments)
+            .filter { seenArguments.insert($0).inserted }
+    }
+
+    /// Updates a global JVM preset and disables incompatible collector
+    /// presets. This is also used by the settings UI instead of mutating the
+    /// published array directly, so the mutual-exclusion rule is applied to
+    /// future user changes as well as to launch-time normalization.
+    func setJVMPresetEnabled(id: UUID, enabled: Bool) {
+        guard let index = jvmPresets.firstIndex(where: { $0.id == id }) else { return }
+        jvmPresets[index].isEnabled = enabled
+
+        guard enabled,
+              let selectedCollectorFamily = garbageCollectorFamily(for: jvmPresets[index]) else {
+            return
+        }
+
+        for otherIndex in jvmPresets.indices where otherIndex != index {
+            guard let otherCollectorFamily = garbageCollectorFamily(for: jvmPresets[otherIndex]) else {
+                continue
+            }
+            if otherCollectorFamily != selectedCollectorFamily {
+                jvmPresets[otherIndex].isEnabled = false
+            }
+        }
+    }
+
+    private func garbageCollectorFamily(for preset: JVMPreset) -> String? {
+        preset.arguments.compactMap(garbageCollectorFamily(for:)).first
+    }
+
+    private func garbageCollectorFamily(for argument: String) -> String? {
+        guard (argument.hasPrefix("-XX:+Use") || argument.hasPrefix("-XX:-Use")),
+              argument.hasSuffix("GC"),
+              let useRange = argument.range(of: "Use") else {
+            return nil
+        }
+        return String(argument[useRange.upperBound...])
+    }
+
+    private func instanceWithEnabledJVMArguments(_ instance: LauncherInstance) -> LauncherInstance {
+        let presetArguments = enabledJVMArguments
+        guard !presetArguments.isEmpty else { return instance }
+
+        var launchInstance = instance
+        var mergedArguments = presetArguments
+        var seenArguments = Set(presetArguments)
+        for argument in instance.profile.jvmArguments where seenArguments.insert(argument).inserted {
+            mergedArguments.append(argument)
+        }
+        launchInstance.profile.jvmArguments = mergedArguments
+        return launchInstance
+    }
+
     func launchPreviewForSelectedInstance() -> LaunchPreview? {
         guard let selectedInstance,
               let selectedJavaRuntime,
@@ -806,11 +881,12 @@ extension LauncherStore {
         else {
             return nil
         }
+        let launchInstance = instanceWithEnabledJVMArguments(selectedInstance)
         return LaunchPreview(
-            instance: selectedInstance,
+            instance: launchInstance,
             java: selectedJavaRuntime,
             command: launchService.previewCommand(
-                for: selectedInstance,
+                for: launchInstance,
                 java: selectedJavaRuntime,
                 account: selectedAccount
             )
@@ -873,8 +949,9 @@ extension LauncherStore {
             return
         }
 
+        let launchInstance = instanceWithEnabledJVMArguments(selectedInstance)
         let preflightReport = launchService.preflight(
-            instance: selectedInstance,
+            instance: launchInstance,
             java: selectedJavaRuntime,
             account: account
         )
@@ -893,7 +970,7 @@ extension LauncherStore {
 
         do {
             let session = try launchService.launch(
-                instance: selectedInstance,
+                instance: launchInstance,
                 java: selectedJavaRuntime,
                 account: account
             )

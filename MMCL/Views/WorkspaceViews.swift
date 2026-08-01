@@ -322,7 +322,7 @@ private struct LaunchSettingsTab: View {
 
             Section("高级选项") {
                 TextField("JVM 参数", text: Binding(
-                    get: { store.jvmPresets.filter(\.isEnabled).flatMap(\.arguments).joined(separator: " ") },
+                    get: { store.enabledJVMArguments.joined(separator: " ") },
                     set: { _ in }
                 ))
                 .textFieldStyle(.roundedBorder)
@@ -349,9 +349,7 @@ private struct LaunchSettingsTab: View {
                             Toggle(preset.name, isOn: Binding(
                                 get: { preset.isEnabled },
                                 set: { newValue in
-                                    if let idx = store.jvmPresets.firstIndex(where: { $0.id == preset.id }) {
-                                        store.jvmPresets[idx].isEnabled = newValue
-                                    }
+                                    store.setJVMPresetEnabled(id: preset.id, enabled: newValue)
                                 }
                             ))
                             Spacer()

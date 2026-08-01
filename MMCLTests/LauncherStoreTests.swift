@@ -126,6 +126,14 @@ final class LauncherStoreTests: XCTestCase {
             javaRuntimes: [runtime],
             availableVersions: []
         )
+        store.jvmPresets = [
+            JVMPreset(
+                id: UUID(),
+                name: "ZGC",
+                arguments: ["-XX:+UseZGC"],
+                isEnabled: true
+            )
+        ]
         let offlineAccount = MinecraftAccount(username: "Steve", type: .offline)
         store.accounts = [offlineAccount]
         store.selectedAccountID = offlineAccount.id
@@ -139,6 +147,7 @@ final class LauncherStoreTests: XCTestCase {
         XCTAssertEqual(preview?.java.displayName, "Temurin 21 · Java 21 · Apple Silicon")
         XCTAssertTrue(preview?.command.contains("--username") == true)
         XCTAssertTrue(preview?.command.contains("Steve") == true)
+        XCTAssertTrue(preview?.command.contains("-XX:+UseZGC") == true)
     }
 
     @MainActor
@@ -234,6 +243,7 @@ final class LauncherStoreTests: XCTestCase {
             logFileURL: URL(fileURLWithPath: "/Users/example/Instances/vanilla/logs/latest.log"),
             startedAt: Date(timeIntervalSince1970: 1_700_000_000)
         )
+        let launchService = StubLaunchService(session: expectedSession)
         let store = LauncherStore(
             instances: [instance],
             downloadJobs: [],
@@ -241,8 +251,16 @@ final class LauncherStoreTests: XCTestCase {
             diagnostics: [],
             javaRuntimes: [runtime],
             availableVersions: [],
-            launchService: StubLaunchService(session: expectedSession)
+            launchService: launchService
         )
+        store.jvmPresets = [
+            JVMPreset(
+                id: UUID(),
+                name: "ZGC",
+                arguments: ["-XX:+UseZGC"],
+                isEnabled: true
+            )
+        ]
         let offlineAccount = MinecraftAccount(username: "Steve", type: .offline)
         store.accounts = [offlineAccount]
         store.selectedAccountID = offlineAccount.id
@@ -255,6 +273,55 @@ final class LauncherStoreTests: XCTestCase {
         XCTAssertEqual(store.currentLaunchSession, expectedSession)
         XCTAssertEqual(store.diagnostics.first?.title, "Minecraft 已启动")
         XCTAssertTrue(store.diagnostics.first?.summary.contains("42") == true)
+        XCTAssertTrue(launchService.lastPreflightInstance?.profile.jvmArguments.contains("-XX:+UseZGC") == true)
+        XCTAssertTrue(launchService.lastLaunchInstance?.profile.jvmArguments.contains("-XX:+UseZGC") == true)
+    }
+
+    @MainActor
+    func testJVMCollectorPresetsAreMutuallyExclusiveButSameFamilyCanCombine() {
+        let g1Preset = JVMPreset(
+            id: UUID(),
+            name: "G1GC",
+            arguments: ["-XX:+UseG1GC"],
+            isEnabled: false
+        )
+        let g1TuningPreset = JVMPreset(
+            id: UUID(),
+            name: "G1 调优",
+            arguments: ["-XX:+UseG1GC", "-XX:MaxGCPauseMillis=50"],
+            isEnabled: false
+        )
+        let zgcPreset = JVMPreset(
+            id: UUID(),
+            name: "ZGC",
+            arguments: ["-XX:+UseZGC"],
+            isEnabled: false
+        )
+        let store = LauncherStore(
+            instances: [],
+            downloadJobs: [],
+            featuredProjects: [],
+            diagnostics: [],
+            javaRuntimes: [],
+            availableVersions: []
+        )
+        store.jvmPresets = [g1Preset, g1TuningPreset, zgcPreset]
+
+        store.setJVMPresetEnabled(id: g1Preset.id, enabled: true)
+        store.setJVMPresetEnabled(id: g1TuningPreset.id, enabled: true)
+
+        XCTAssertTrue(store.jvmPresets[0].isEnabled)
+        XCTAssertTrue(store.jvmPresets[1].isEnabled)
+        XCTAssertFalse(store.jvmPresets[2].isEnabled)
+        XCTAssertEqual(store.enabledJVMArguments.filter { $0 == "-XX:+UseG1GC" }.count, 1)
+        XCTAssertTrue(store.enabledJVMArguments.contains("-XX:MaxGCPauseMillis=50"))
+
+        store.setJVMPresetEnabled(id: zgcPreset.id, enabled: true)
+
+        XCTAssertFalse(store.jvmPresets[0].isEnabled)
+        XCTAssertFalse(store.jvmPresets[1].isEnabled)
+        XCTAssertTrue(store.jvmPresets[2].isEnabled)
+        XCTAssertEqual(store.enabledJVMArguments, ["-XX:+UseZGC"])
     }
 
     @MainActor
@@ -667,6 +734,8 @@ final class LauncherStoreTests: XCTestCase {
         let session: LaunchSession
         let preflightReport: LaunchPreflightReport
         private(set) var didLaunch = false
+        private(set) var lastPreflightInstance: LauncherInstance?
+        private(set) var lastLaunchInstance: LauncherInstance?
         private(set) var lastPreflightAccount: MinecraftAccount?
         private(set) var lastLaunchAccount: MinecraftAccount?
 
@@ -687,11 +756,13 @@ final class LauncherStoreTests: XCTestCase {
         }
 
         func preflight(instance: LauncherInstance, java: JavaRuntime, account: MinecraftAccount) -> LaunchPreflightReport {
+            lastPreflightInstance = instance
             lastPreflightAccount = account
             return preflightReport
         }
 
         func launch(instance: LauncherInstance, java: JavaRuntime, account: MinecraftAccount) throws -> LaunchSession {
+            lastLaunchInstance = instance
             lastLaunchAccount = account
             didLaunch = true
             return session
