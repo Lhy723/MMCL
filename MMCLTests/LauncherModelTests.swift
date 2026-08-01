@@ -2,6 +2,43 @@ import XCTest
 @testable import MMCL
 
 final class LauncherModelTests: XCTestCase {
+    func testNeoForgeIsFirstClassGameLoader() throws {
+        XCTAssertTrue(GameLoader.allCases.contains(.neoForge))
+        XCTAssertEqual(GameLoader(rawValue: "NeoForge"), .neoForge)
+        XCTAssertEqual(GameLoader.neoForge.modrinthLoaderName, "neoforge")
+
+        let root = URL(fileURLWithPath: "/Users/example/Library/Application Support/MMCL/Instances/neoforge")
+        let instance = LauncherInstance(
+            name: "NeoForge 生存",
+            gameVersion: "1.21.5",
+            loader: .neoForge,
+            rootDirectory: root
+        )
+
+        XCTAssertEqual(instance.subtitle, "1.21.5 · NeoForge")
+        XCTAssertEqual(instance.blockIcon, "NeoForge")
+
+        let data = try JSONEncoder.mmcl.encode(instance)
+        let decoded = try JSONDecoder.mmcl.decode(LauncherInstance.self, from: data)
+        XCTAssertEqual(decoded.loader, .neoForge)
+    }
+
+    func testContentProjectRoundTripsNeoForgeLoader() throws {
+        let project = ContentProject(
+            id: "neoforge-project",
+            title: "NeoForge Mod",
+            type: .mod,
+            source: "Modrinth",
+            gameVersions: ["1.21.5"],
+            loaders: [.neoForge]
+        )
+
+        let data = try JSONEncoder.mmcl.encode(project)
+        let decoded = try JSONDecoder.mmcl.decode(ContentProject.self, from: data)
+
+        XCTAssertEqual(decoded.loaders, [.neoForge])
+    }
+
     func testLauncherInstanceRoundTripsThroughJSON() throws {
         let root = URL(fileURLWithPath: "/Users/example/Library/Application Support/MMCL/Instances/vanilla")
         let instance = LauncherInstance(

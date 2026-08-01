@@ -182,6 +182,8 @@ struct InstanceSettingsView: View {
                 Button { Task { await store.installForgeLoader(for: instance) } } label: {
                     Label("安装 Forge", systemImage: "hammer")
                 }
+            }
+            if instance.loader == .neoForge {
                 Button { Task { await store.installNeoForgeLoader(for: instance) } } label: {
                     Label("安装 NeoForge", systemImage: "hammer.fill")
                 }

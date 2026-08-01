@@ -364,7 +364,7 @@ struct DownloadResourceSearchView: View {
                                 .offset(x: visibleIDs.contains(item.id) ? 0 : 20)
                                 .onAppear {
                                     if !visibleIDs.contains(item.id) {
-                                        withAnimation(.mmclSpring(response: 0.5, dampingFraction: 0.85, scale: store.animationDurationScale)) {
+                                        _ = withAnimation(.mmclSpring(response: 0.5, dampingFraction: 0.85, scale: store.animationDurationScale)) {
                                             visibleIDs.insert(item.id)
                                         }
                                     }
@@ -559,6 +559,11 @@ struct DownloadResourceSearchView: View {
                 var facets: [[String]] = [["project_type:\(projectType)"]]
                 if let categoryFacet = selectedCategory.modrinthFacet {
                     facets.append([categoryFacet])
+                }
+                if let selectedLoader,
+                   let loader = GameLoader(rawValue: selectedLoader),
+                   let loaderFacet = loader.modrinthLoaderName {
+                    facets.append(["categories:\(loaderFacet)"])
                 }
                 let response = try await store.modrinthService.search(query: query, facets: facets, index: index, offset: offset)
                 items.append(contentsOf: response.hits.map { .modrinth($0) })
