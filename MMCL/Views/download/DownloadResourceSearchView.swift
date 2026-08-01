@@ -364,7 +364,7 @@ struct DownloadResourceSearchView: View {
                                 .offset(x: visibleIDs.contains(item.id) ? 0 : 20)
                                 .onAppear {
                                     if !visibleIDs.contains(item.id) {
-                                        withAnimation(.mmclSpring(response: 0.5, dampingFraction: 0.85, scale: store.animationDurationScale)) {
+                                        _ = withAnimation(.mmclSpring(response: 0.5, dampingFraction: 0.85, scale: store.animationDurationScale)) {
                                             visibleIDs.insert(item.id)
                                         }
                                     }

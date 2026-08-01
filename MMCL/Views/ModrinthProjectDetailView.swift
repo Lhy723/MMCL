@@ -54,7 +54,7 @@ struct ModrinthProjectDetailView: View {
                                 .offset(x: visibleIDs.contains(version.id) ? 0 : 20)
                                 .onAppear {
                                     if !visibleIDs.contains(version.id) {
-                                        withAnimation(.mmclSpring(response: 0.4, dampingFraction: 0.85, scale: store.animationDurationScale)) {
+                                        _ = withAnimation(.mmclSpring(response: 0.4, dampingFraction: 0.85, scale: store.animationDurationScale)) {
                                             visibleIDs.insert(version.id)
                                         }
                                     }

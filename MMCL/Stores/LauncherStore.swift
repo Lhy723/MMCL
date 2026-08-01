@@ -157,51 +157,68 @@ final class LauncherStore: ObservableObject {
         selectedDownloadSource: DownloadSource = .bmclapi,
         javaRuntimes: [JavaRuntime] = [],
         availableVersions: [MinecraftVersion] = [],
-        launchService: LaunchServicing = LaunchService(),
-        downloadService: DownloadServicing = DownloadService(),
-        versionService: VersionManifestServicing = VersionManifestService(),
-        javaRuntimeService: JavaRuntimeServicing = JavaRuntimeService(),
-        instanceService: InstanceServicing = InstanceService(),
-        fabricService: FabricServicing = FabricService(),
-        quiltService: QuiltServicing = QuiltService(),
-        forgeService: ForgeServicing = ForgeService(),
-        neoForgeService: NeoForgeServicing = NeoForgeService(),
-        modrinthService: ModrinthServicing = ModrinthService(),
-        curseForgeService: CurseForgeServicing = CurseForgeService(),
-        authService: AuthServicing = AuthService(),
-        diagnosticService: DiagnosticServicing = DiagnosticService(),
-        skinService: SkinServicing = SkinService(),
-        serverListService: ServerListServicing = ServerListService(),
+        launchService: LaunchServicing? = nil,
+        downloadService: DownloadServicing? = nil,
+        versionService: VersionManifestServicing? = nil,
+        javaRuntimeService: JavaRuntimeServicing? = nil,
+        instanceService: InstanceServicing? = nil,
+        fabricService: FabricServicing? = nil,
+        quiltService: QuiltServicing? = nil,
+        forgeService: ForgeServicing? = nil,
+        neoForgeService: NeoForgeServicing? = nil,
+        modrinthService: ModrinthServicing? = nil,
+        curseForgeService: CurseForgeServicing? = nil,
+        authService: AuthServicing? = nil,
+        diagnosticService: DiagnosticServicing? = nil,
+        skinService: SkinServicing? = nil,
+        serverListService: ServerListServicing? = nil,
         accountPersistence: AccountPersistence? = nil
     ) {
+        let resolvedLaunchService = launchService ?? LaunchService()
+        let resolvedDownloadService = downloadService ?? DownloadService()
+        let resolvedVersionService = versionService ?? VersionManifestService()
+        let resolvedJavaRuntimeService = javaRuntimeService ?? JavaRuntimeService()
+        let resolvedInstanceService = instanceService ?? InstanceService()
+        let resolvedFabricService = fabricService ?? FabricService()
+        let resolvedQuiltService = quiltService ?? QuiltService()
+        let resolvedForgeService = forgeService ?? ForgeService()
+        let resolvedNeoForgeService = neoForgeService ?? NeoForgeService()
+        let resolvedModrinthService = modrinthService ?? ModrinthService()
+        let resolvedCurseForgeService = curseForgeService ?? CurseForgeService()
+        let resolvedAuthService = authService ?? AuthService()
+        let resolvedDiagnosticService = diagnosticService ?? DiagnosticService()
+        let resolvedSkinService = skinService ?? SkinService()
+        let resolvedServerListService = serverListService ?? ServerListService()
         let resolvedAccountPersistence = accountPersistence ?? AccountPersistence()
 
+        let resolvedInstances: [LauncherInstance]
         if instances.isEmpty {
-            self.instances = (try? instanceService.loadAllInstances()) ?? []
+            resolvedInstances = (try? resolvedInstanceService.loadAllInstances()) ?? []
         } else {
-            self.instances = instances
+            resolvedInstances = instances
         }
+        self.instances = resolvedInstances
         self.downloadJobs = downloadJobs
         self.featuredProjects = featuredProjects
         self.diagnostics = diagnostics
         self.selectedDownloadSource = selectedDownloadSource
         self.javaRuntimes = javaRuntimes
         self.availableVersions = availableVersions
-        self.launchService = launchService
-        self.downloadService = downloadService
-        self.versionService = versionService
-        self.javaRuntimeService = javaRuntimeService
-        self.instanceService = instanceService
-        self.fabricService = fabricService
-        self.quiltService = quiltService
-        self.forgeService = forgeService
-        self.neoForgeService = neoForgeService
-        self.modrinthService = modrinthService
-        self.curseForgeService = curseForgeService
-        self.authService = authService
-        self.diagnosticService = diagnosticService
-        self.skinService = skinService
-        self.serverListService = serverListService
+        self.launchService = resolvedLaunchService
+        self.downloadService = resolvedDownloadService
+        self.versionService = resolvedVersionService
+        self.javaRuntimeService = resolvedJavaRuntimeService
+        self.instanceService = resolvedInstanceService
+        self.fabricService = resolvedFabricService
+        self.quiltService = resolvedQuiltService
+        self.forgeService = resolvedForgeService
+        self.neoForgeService = resolvedNeoForgeService
+        self.modrinthService = resolvedModrinthService
+        self.curseForgeService = resolvedCurseForgeService
+        self.authService = resolvedAuthService
+        self.diagnosticService = resolvedDiagnosticService
+        self.skinService = resolvedSkinService
+        self.serverListService = resolvedServerListService
         self.accountPersistence = resolvedAccountPersistence
         self.selectedJavaRuntimeID = javaRuntimes.first?.id
         self.selectedSection = .launcher
@@ -209,10 +226,10 @@ final class LauncherStore: ObservableObject {
         // Restore last selected instance
         if let savedID = UserDefaults.standard.string(forKey: "lastSelectedInstanceID"),
            let uuid = UUID(uuidString: savedID),
-           instances.contains(where: { $0.id == uuid }) {
+           resolvedInstances.contains(where: { $0.id == uuid }) {
             self.launcherSelectedInstanceID = uuid
         } else {
-            self.launcherSelectedInstanceID = instances.first?.id
+            self.launcherSelectedInstanceID = resolvedInstances.first?.id
         }
 
         // Load persisted accounts; create default offline if none
@@ -441,7 +458,7 @@ final class LauncherStore: ObservableObject {
         }
     }
 
-    func loadLogContent(for instance: LauncherInstance) -> String {
+    nonisolated func loadLogContent(for instance: LauncherInstance) -> String {
         let logURL = instance.rootDirectory
             .appendingPathComponent("logs", isDirectory: true)
             .appendingPathComponent("latest.log")

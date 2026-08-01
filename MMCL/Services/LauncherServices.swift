@@ -293,10 +293,7 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
 
         let task: URLSessionDownloadTask
         lock.lock()
-        let resumeData = resumeDataMap[job.id]
-        if let resumeData {
-            resumeDataMap.removeValue(forKey: job.id)
-        }
+        let resumeData = resumeDataMap.removeValue(forKey: job.id)
         lock.unlock()
         if let resumeData {
             task = session.downloadTask(withResumeData: resumeData)
@@ -1927,6 +1924,19 @@ protocol ServerListServicing {
     func serverListFileURL(for instance: LauncherInstance) -> URL
 }
 
+private struct ServerPingCompletionGate: @unchecked Sendable {
+    private let semaphore: DispatchSemaphore
+
+    init() {
+        semaphore = DispatchSemaphore(value: 1)
+    }
+
+    nonisolated func run(_ action: @Sendable () -> Void) {
+        guard semaphore.wait(timeout: .now()) == .success else { return }
+        action()
+    }
+}
+
 struct ServerListService: ServerListServicing {
     let applicationSupportDirectory: URL
 
@@ -1965,7 +1975,13 @@ struct ServerListService: ServerListServicing {
 
         return await withCheckedContinuation { continuation in
             let startTime = Date()
-            var didResume = false
+            let completionGate = ServerPingCompletionGate()
+            let finish: @Sendable (ServerInfo.ServerPingResult?) -> Void = { result in
+                completionGate.run {
+                    connection.cancel()
+                    continuation.resume(returning: result)
+                }
+            }
 
             connection.stateUpdateHandler = { state in
                 switch state {
@@ -1998,16 +2014,12 @@ struct ServerListService: ServerListServicing {
                             versionName: "未知",
                             pingMs: elapsed
                         )
-                        connection.cancel()
-                        continuation.resume(returning: result)
+                        finish(result)
                     })
                 case .failed:
-                    continuation.resume(returning: nil)
+                    finish(nil)
                 case .cancelled:
-                    if !didResume {
-                        didResume = true
-                        continuation.resume(returning: nil)
-                    }
+                    finish(nil)
                 default:
                     break
                 }
@@ -2017,11 +2029,7 @@ struct ServerListService: ServerListServicing {
 
             // Timeout after 5 seconds
             DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
-                if !didResume {
-                    didResume = true
-                    connection.cancel()
-                    continuation.resume(returning: nil)
-                }
+                finish(nil)
             }
         }
     }
