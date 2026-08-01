@@ -1768,7 +1768,7 @@ extension LauncherStore {
         let modsDir = instance.rootDirectory.appendingPathComponent("mods", isDirectory: true)
         let destination = modsDir.appendingPathComponent(file.filename)
         do {
-            try await modrinthService.downloadFile(from: file.url, to: destination)
+            try await modrinthService.downloadFile(file, to: destination)
             diagnostics.insert(
                 DiagnosticReport(
                     title: "Mod 已安装",

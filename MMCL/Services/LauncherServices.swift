@@ -1709,6 +1709,16 @@ protocol ModrinthServicing {
     func fetchProject(id: String) async throws -> ModrinthProject
     func fetchVersions(projectID: String, gameVersion: String?, loader: String?) async throws -> [ModrinthVersion]
     func downloadFile(from urlString: String, to destination: URL) async throws
+    func downloadFile(_ file: ModrinthFile, to destination: URL) async throws
+}
+
+extension ModrinthServicing {
+    func downloadFile(_ file: ModrinthFile, to destination: URL) async throws {
+        // A service implementation must opt in to metadata-aware downloads.
+        // Falling back to the legacy URL-only API would make integrity checks
+        // optional and could turn an error response into a valid-looking JAR.
+        throw ModrinthError.missingSHA512
+    }
 }
 
 struct ModrinthService: ModrinthServicing {
@@ -1769,19 +1779,117 @@ struct ModrinthService: ModrinthServicing {
     }
 
     func downloadFile(from urlString: String, to destination: URL) async throws {
-        guard let url = URL(string: urlString) else {
+        guard URL(string: urlString) != nil else {
             throw ModrinthError.invalidURL(urlString)
         }
+        throw ModrinthError.missingSHA512
+    }
+
+    func downloadFile(_ file: ModrinthFile, to destination: URL) async throws {
+        try await downloadFile(file, to: destination, dataLoader: { request in
+            try await URLSession.shared.data(for: request)
+        })
+    }
+
+    func downloadFile(
+        _ file: ModrinthFile,
+        to destination: URL,
+        dataLoader: @escaping (URLRequest) async throws -> (Data, URLResponse)
+    ) async throws {
+        let expectedSHA512 = try Self.normalizedSHA512(file.sha512)
+        guard file.size >= 0 else {
+            throw ModrinthError.invalidFileSize(file.size)
+        }
+        guard let url = URL(string: file.url) else {
+            throw ModrinthError.invalidURL(file.url)
+        }
+
         let request = makeRequest(url: url)
-        let (data, _) = try await URLSession.shared.data(for: request)
-        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try data.write(to: destination, options: .atomic)
+        let (data, response) = try await dataLoader(request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ModrinthError.invalidResponse
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw ModrinthError.httpStatus(httpResponse.statusCode)
+        }
+
+        let actualSize = Int64(data.count)
+        if let contentLength = httpResponse.value(forHTTPHeaderField: "Content-Length") {
+            guard let declaredSize = Int64(contentLength.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  declaredSize >= 0 else {
+                throw ModrinthError.invalidContentLength(contentLength)
+            }
+            guard declaredSize == actualSize else {
+                throw ModrinthError.contentLengthMismatch(expected: declaredSize, actual: actualSize)
+            }
+        }
+        guard actualSize == file.size else {
+            throw ModrinthError.sizeMismatch(expected: file.size, actual: actualSize)
+        }
+
+        let actualSHA512 = SHA512.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        guard actualSHA512.caseInsensitiveCompare(expectedSHA512) == .orderedSame else {
+            throw ModrinthError.checksumMismatch
+        }
+
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let temporaryURL = destination.deletingLastPathComponent()
+            .appendingPathComponent(
+                ".\(destination.lastPathComponent).\(UUID().uuidString).download"
+            )
+        var didCommit = false
+        defer {
+            if !didCommit {
+                try? fileManager.removeItem(at: temporaryURL)
+            }
+        }
+
+        try data.write(to: temporaryURL, options: .atomic)
+        if fileManager.fileExists(atPath: destination.path) {
+            _ = try fileManager.replaceItemAt(
+                destination,
+                withItemAt: temporaryURL,
+                backupItemName: nil,
+                options: .usingNewMetadataOnly
+            )
+        } else {
+            try fileManager.moveItem(at: temporaryURL, to: destination)
+        }
+        didCommit = true
+    }
+
+    private static func normalizedSHA512(_ value: String?) throws -> String {
+        guard let value else {
+            throw ModrinthError.missingSHA512
+        }
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let hexDigits = CharacterSet(charactersIn: "0123456789abcdef")
+        guard normalized.count == 128,
+              normalized.unicodeScalars.allSatisfy({ hexDigits.contains($0) }) else {
+            throw ModrinthError.invalidSHA512
+        }
+        return normalized
     }
 }
 
 enum ModrinthError: LocalizedError, Equatable {
     case invalidURL(String)
     case searchFailed(String)
+    case invalidResponse
+    case httpStatus(Int)
+    case missingSHA512
+    case invalidSHA512
+    case invalidFileSize(Int64)
+    case invalidContentLength(String)
+    case contentLengthMismatch(expected: Int64, actual: Int64)
+    case sizeMismatch(expected: Int64, actual: Int64)
+    case checksumMismatch
 
     var errorDescription: String? {
         switch self {
@@ -1789,6 +1897,24 @@ enum ModrinthError: LocalizedError, Equatable {
             return "无效的下载地址：\(url)"
         case .searchFailed(let detail):
             return "Modrinth 搜索失败：\(detail)"
+        case .invalidResponse:
+            return "Modrinth 下载返回了无效的 HTTP 响应。"
+        case .httpStatus(let status):
+            return "Modrinth 下载失败：HTTP \(status)。"
+        case .missingSHA512:
+            return "Modrinth 文件缺少 SHA-512 校验值，已拒绝安装。"
+        case .invalidSHA512:
+            return "Modrinth 文件的 SHA-512 校验值格式无效。"
+        case .invalidFileSize(let size):
+            return "Modrinth 文件大小无效：\(size)。"
+        case .invalidContentLength(let value):
+            return "Modrinth 响应的 Content-Length 无效：\(value)。"
+        case .contentLengthMismatch(let expected, let actual):
+            return "Modrinth 响应长度不匹配：声明 \(expected) 字节，实际 \(actual) 字节。"
+        case .sizeMismatch(let expected, let actual):
+            return "Modrinth 文件大小校验失败：声明 \(expected) 字节，实际 \(actual) 字节。"
+        case .checksumMismatch:
+            return "Modrinth 文件 SHA-512 校验失败，文件可能已损坏或被篡改。"
         }
     }
 }

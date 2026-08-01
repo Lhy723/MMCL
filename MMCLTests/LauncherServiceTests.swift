@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 @testable import MMCL
 
@@ -1114,7 +1115,7 @@ final class LauncherServiceTests: XCTestCase {
                 "game_versions": ["1.21.5"],
                 "loaders": ["fabric"],
                 "files": [
-                    {"filename": "sodium-fabric-0.6.0.jar", "url": "https://example.com/sodium.jar", "size": 12345, "primary": true}
+                    {"hashes": {"sha512": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "filename": "sodium-fabric-0.6.0.jar", "url": "https://example.com/sodium.jar", "size": 12345, "primary": true}
                 ]
             }
         ]
@@ -1122,6 +1123,7 @@ final class LauncherServiceTests: XCTestCase {
         let versions = try JSONDecoder.mmcl.decode([ModrinthVersion].self, from: json)
         XCTAssertEqual(versions.count, 1)
         XCTAssertEqual(versions.first?.files.first?.filename, "sodium-fabric-0.6.0.jar")
+        XCTAssertEqual(versions.first?.files.first?.sha512?.count, 128)
         XCTAssertEqual(versions.first?.loaders, ["fabric"])
     }
 
@@ -1156,6 +1158,160 @@ final class LauncherServiceTests: XCTestCase {
         let version = ModrinthVersion(id: "v1", name: "Mod 1.0", versionNumber: "1.0.0", gameVersions: ["1.21.5"], loaders: ["fabric"], files: [file])
         XCTAssertEqual(version.files.first?.filename, "mod.jar")
         XCTAssertEqual(version.loaders, ["fabric"])
+    }
+
+    func testModrinthDownloadRejectsHTTPErrorWithoutCreatingDestination() async throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? fileManager.removeItem(at: root) }
+        let payload = Data("error".utf8)
+        let file = ModrinthFile(
+            filename: "mod.jar",
+            url: "https://cdn.example.com/mod.jar",
+            size: Int64(payload.count),
+            primary: true,
+            hashes: ["sha512": Self.sha512Hex(payload)]
+        )
+        let destination = root.appendingPathComponent("mods/mod.jar")
+        let response = Self.httpResponse(
+            url: URL(string: file.url)!,
+            statusCode: 404,
+            contentLength: payload.count
+        )
+        var didRequest = false
+
+        do {
+            try await ModrinthService().downloadFile(file, to: destination, dataLoader: { _ in
+                didRequest = true
+                return (payload, response)
+            })
+            XCTFail("HTTP 404 不应报告 Mod 安装成功")
+        } catch let error as ModrinthError {
+            XCTAssertEqual(error, .httpStatus(404))
+        }
+
+        XCTAssertTrue(didRequest)
+        XCTAssertFalse(fileManager.fileExists(atPath: destination.path))
+    }
+
+    func testModrinthDownloadValidatesContentLengthAndSHA512BeforeAtomicInstall() async throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? fileManager.removeItem(at: root) }
+        let payload = Data("valid jar payload".utf8)
+        let file = ModrinthFile(
+            filename: "mod.jar",
+            url: "https://cdn.example.com/mod.jar",
+            size: Int64(payload.count),
+            primary: true,
+            hashes: ["sha512": Self.sha512Hex(payload)]
+        )
+        let destination = root.appendingPathComponent("mods/mod.jar")
+        let response = Self.httpResponse(
+            url: URL(string: file.url)!,
+            statusCode: 200,
+            contentLength: payload.count
+        )
+
+        try await ModrinthService().downloadFile(file, to: destination, dataLoader: { _ in
+            (payload, response)
+        })
+
+        XCTAssertEqual(try Data(contentsOf: destination), payload)
+        let installedFiles = try fileManager.contentsOfDirectory(
+            at: destination.deletingLastPathComponent(),
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertEqual(installedFiles.map(\.lastPathComponent), ["mod.jar"])
+    }
+
+    func testModrinthDownloadRejectsContentLengthMismatchAndPreservesExistingFile() async throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? fileManager.removeItem(at: root) }
+        let payload = Data("new payload".utf8)
+        let previousPayload = Data("previous jar".utf8)
+        let file = ModrinthFile(
+            filename: "mod.jar",
+            url: "https://cdn.example.com/mod.jar",
+            size: Int64(payload.count),
+            primary: true,
+            hashes: ["sha512": Self.sha512Hex(payload)]
+        )
+        let destination = root.appendingPathComponent("mods/mod.jar")
+        try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try previousPayload.write(to: destination)
+        let response = Self.httpResponse(
+            url: URL(string: file.url)!,
+            statusCode: 200,
+            contentLength: payload.count + 1
+        )
+
+        do {
+            try await ModrinthService().downloadFile(file, to: destination, dataLoader: { _ in
+                (payload, response)
+            })
+            XCTFail("Content-Length 不匹配时不应替换已有文件")
+        } catch let error as ModrinthError {
+            XCTAssertEqual(
+                error,
+                .contentLengthMismatch(expected: Int64(payload.count + 1), actual: Int64(payload.count))
+            )
+        }
+
+        XCTAssertEqual(try Data(contentsOf: destination), previousPayload)
+    }
+
+    func testModrinthDownloadRejectsMissingSHA512BeforeRequest() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = ModrinthFile(
+            filename: "mod.jar",
+            url: "https://cdn.example.com/mod.jar",
+            size: 1,
+            primary: true
+        )
+        let destination = root.appendingPathComponent("mods/mod.jar")
+        var didRequest = false
+
+        do {
+            try await ModrinthService().downloadFile(file, to: destination, dataLoader: { _ in
+                didRequest = true
+                return (
+                    Data([0]),
+                    Self.httpResponse(
+                        url: URL(string: file.url)!,
+                        statusCode: 200,
+                        contentLength: 1
+                    )
+                )
+            })
+            XCTFail("缺少 SHA-512 时不应开始下载")
+        } catch let error as ModrinthError {
+            XCTAssertEqual(error, .missingSHA512)
+        }
+
+        XCTAssertFalse(didRequest)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    private static func sha512Hex(_ data: Data) -> String {
+        SHA512.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    private static func httpResponse(
+        url: URL,
+        statusCode: Int,
+        contentLength: Int
+    ) -> HTTPURLResponse {
+        HTTPURLResponse(
+            url: url,
+            statusCode: statusCode,
+            httpVersion: nil,
+            headerFields: ["Content-Length": "\(contentLength)"]
+        )!
     }
 
     private static let legacyArgumentsMetadataJSON = """

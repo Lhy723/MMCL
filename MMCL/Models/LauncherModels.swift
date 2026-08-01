@@ -1555,6 +1555,25 @@ struct ModrinthFile: Codable, Equatable {
     var url: String
     var size: Int64
     var primary: Bool
+    var hashes: [String: String]?
+
+    init(
+        filename: String,
+        url: String,
+        size: Int64,
+        primary: Bool,
+        hashes: [String: String]? = nil
+    ) {
+        self.filename = filename
+        self.url = url
+        self.size = size
+        self.primary = primary
+        self.hashes = hashes
+    }
+
+    var sha512: String? {
+        hashes?["sha512"]
+    }
 }
 
 struct SkinInfo: Identifiable, Codable, Equatable {
