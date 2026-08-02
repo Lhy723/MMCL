@@ -153,6 +153,10 @@ struct SettingsView: View {
                 .tabItem { Label("启动", systemImage: "play.fill") }
                 .tag("launch")
 
+            JavaManagementView(store: store)
+                .tabItem { Label("Java", systemImage: "cup.and.saucer.fill") }
+                .tag("java")
+
             PersonalizationSettingsTab(store: store)
                 .tabItem { Label("个性化", systemImage: "paintbrush") }
                 .tag("personalization")
@@ -230,7 +234,7 @@ private struct LaunchSettingsTab: View {
             Section("游戏 Java") {
                 Picker("运行时", selection: javaRuntimeSelection) {
                     Text("自动选择（按当前实例）").tag(JavaRuntime.ID?.none)
-                    ForEach(store.javaRuntimes) { runtime in
+                    ForEach(store.javaRuntimes.filter { !store.isJavaRuntimeDisabled($0) }) { runtime in
                         Text(runtime.displayName).tag(Optional(runtime.id))
                     }
                 }
@@ -255,34 +259,8 @@ private struct LaunchSettingsTab: View {
                     }
                 }
                 .disabled(store.isScanningJava)
+                .accessibilityLabel(store.isScanningJava ? "正在扫描 Java" : "重新扫描 Java")
 
-                Button {
-                    store.showingJDKInstall = true
-                } label: {
-                    Label("安装 Java", systemImage: "arrow.down.circle")
-                }
-
-                HStack {
-                    Text("手动导入 Java 路径")
-                    Spacer()
-                    Button("选择") {
-                        let panel = NSOpenPanel()
-                        panel.allowsMultipleSelection = false
-                        panel.canChooseDirectories = false
-                        panel.canChooseFiles = true
-                        panel.begin { response in
-                            if response == .OK, let url = panel.url {
-                                store.customJavaPath = url.path
-                            }
-                        }
-                    }
-                }
-                if !store.customJavaPath.isEmpty {
-                    Text(store.customJavaPath)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
             }
 
             Section("内存分配") {
@@ -300,43 +278,35 @@ private struct LaunchSettingsTab: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
-                let totalBytes = ProcessInfo.processInfo.physicalMemory
-                let divisor: UInt64 = 1024 * 1024
-                let totalMB = Int(totalBytes / divisor)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text("系统总内存")
                         Spacer()
-                        Text("\(totalMB) MB")
+                        Text("\(totalMemoryMegabytes) MB")
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
-                    let allocFraction = min(Double(store.defaultMemoryMegabytes) / Double(totalMB), 1.0)
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(Color.secondary.opacity(0.15))
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(allocFraction > 0.85 ? Color.red : Color.accentColor)
-                                .frame(width: geo.size.width * allocFraction)
-                        }
-                    }
-                    .frame(height: 8)
-                    .animation(.mmclSpring(response: 0.4, dampingFraction: 0.85, scale: store.animationDurationScale), value: store.defaultMemoryMegabytes)
-                    Text("已分配 \(store.defaultMemoryMegabytes) MB（\(String(format: "%.0f", allocFraction * 100))%）")
+                    ProgressView(
+                        value: Double(clampedMemoryMegabytes),
+                        total: Double(totalMemoryMegabytes)
+                    )
+                    .tint(allocatedMemoryFraction > 0.85 ? .red : .accentColor)
+                    .accessibilityLabel("内存分配进度")
+                    .accessibilityValue("已分配 \(allocatedMemoryPercentage)%")
+                    Text("已分配 \(store.defaultMemoryMegabytes) MB（\(allocatedMemoryPercentage)%）")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
 
             Section("高级选项") {
-                TextField("JVM 参数", text: Binding(
-                    get: { store.enabledJVMArguments.joined(separator: " ") },
-                    set: { _ in }
-                ))
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-                .disabled(true)
+                LabeledContent("JVM 参数") {
+                    Text(store.enabledJVMArguments.joined(separator: " "))
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
                 .help("在下方 JVM 预设中管理")
 
                 TextField("游戏参数", text: $store.gameArguments)
@@ -352,7 +322,7 @@ private struct LaunchSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Section("JVM 预设") {
+                DisclosureGroup("JVM 预设") {
                     ForEach(store.jvmPresets) { preset in
                         HStack {
                             Toggle(preset.name, isOn: Binding(
@@ -377,6 +347,23 @@ private struct LaunchSettingsTab: View {
         .animation(.mmclSpring(response: 0.35, dampingFraction: 0.85, scale: store.animationDurationScale), value: store.memoryAutoConfig)
     }
 
+    private var totalMemoryMegabytes: Int {
+        let divisor: UInt64 = 1024 * 1024
+        return max(Int(ProcessInfo.processInfo.physicalMemory / divisor), 1)
+    }
+
+    private var clampedMemoryMegabytes: Int {
+        min(max(store.defaultMemoryMegabytes, 0), totalMemoryMegabytes)
+    }
+
+    private var allocatedMemoryFraction: Double {
+        min(max(Double(store.defaultMemoryMegabytes) / Double(totalMemoryMegabytes), 0), 1)
+    }
+
+    private var allocatedMemoryPercentage: String {
+        String(format: "%.0f", allocatedMemoryFraction * 100)
+    }
+
     private var javaRuntimeSelection: Binding<JavaRuntime.ID?> {
         Binding(
             get: {
@@ -395,6 +382,7 @@ private struct LaunchSettingsTab: View {
 
 private struct PersonalizationSettingsTab: View {
     @ObservedObject var store: LauncherStore
+    @State private var isPresentingBackgroundImporter = false
 
     var body: some View {
         Form {
@@ -406,16 +394,11 @@ private struct PersonalizationSettingsTab: View {
                 }
 
                 Button {
-                    let panel = NSOpenPanel()
-                    panel.allowedContentTypes = [.image]
-                    panel.begin { response in
-                        if response == .OK, let url = panel.url {
-                            store.setBackgroundImage(url)
-                        }
-                    }
+                    isPresentingBackgroundImporter = true
                 } label: {
                     Label(store.backgroundImage.url != nil ? "更换背景" : "选择背景图片", systemImage: "photo")
                 }
+                .accessibilityLabel(store.backgroundImage.url != nil ? "更换背景图片" : "选择背景图片")
 
                 if store.backgroundImage.url != nil {
                     Button("移除背景") {
@@ -485,6 +468,7 @@ private struct PersonalizationSettingsTab: View {
                     }
                 }
                 .disabled(store.isLoggingIn)
+                .accessibilityLabel(store.isLoggingIn ? "正在进行 Microsoft 登录" : "Microsoft 登录")
 
                 if !store.deviceCodeMessage.isEmpty {
                     Text(store.deviceCodeMessage)
@@ -495,6 +479,15 @@ private struct PersonalizationSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        .fileImporter(
+            isPresented: $isPresentingBackgroundImporter,
+            allowedContentTypes: [.image],
+            allowsMultipleSelection: false
+        ) { result in
+            if case .success(let urls) = result, let url = urls.first {
+                store.setBackgroundImage(url)
+            }
+        }
         .animation(.mmclSpring(response: 0.35, dampingFraction: 0.85, scale: store.animationDurationScale), value: store.backgroundImage.url != nil)
     }
 }
@@ -503,6 +496,7 @@ private struct PersonalizationSettingsTab: View {
 
 private struct OtherSettingsTab: View {
     @ObservedObject var store: LauncherStore
+    @State private var isPresentingProfileImporter = false
 
     var body: some View {
         Form {
@@ -586,13 +580,7 @@ private struct OtherSettingsTab: View {
                 }
 
                 Button {
-                    let panel = NSOpenPanel()
-                    panel.allowedContentTypes = [.json]
-                    panel.begin { response in
-                        if response == .OK, let url = panel.url {
-                            store.importProfile(from: url)
-                        }
-                    }
+                    isPresentingProfileImporter = true
                 } label: {
                     Label("导入配置", systemImage: "square.and.arrow.down")
                 }
@@ -630,6 +618,7 @@ private struct OtherSettingsTab: View {
                     }
                 }
                 .disabled(store.isCheckingForUpdates || store.isDownloadingUpdate)
+                .accessibilityLabel(store.isCheckingForUpdates ? "正在检查更新" : "检查更新")
 
                 Button {
                     store.openGitHubRepo()
@@ -674,6 +663,15 @@ private struct OtherSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        .fileImporter(
+            isPresented: $isPresentingProfileImporter,
+            allowedContentTypes: [.json],
+            allowsMultipleSelection: false
+        ) { result in
+            if case .success(let urls) = result, let url = urls.first {
+                store.importProfile(from: url)
+            }
+        }
     }
 }
 
@@ -709,6 +707,8 @@ private struct AccountRow: View {
                         Image(systemName: "pencil")
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("编辑离线账号")
+                    .accessibilityHint("修改此账号的用户名")
                 }
                 Button(role: .destructive) {
                     store.deleteAccount(account)
@@ -716,6 +716,8 @@ private struct AccountRow: View {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("删除账号")
+                .accessibilityHint("从 MMCL 中移除此账号")
             }
         }
     }

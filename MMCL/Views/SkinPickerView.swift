@@ -28,7 +28,10 @@ struct SkinPickerView: View {
                 appeared = true
             }
         }
-        .onAppear {
+        .task {
+            // Defer the published skin-list update until SwiftUI has
+            // finished the current view transaction.
+            await Task.yield()
             if let account = store.selectedAccount {
                 store.scanSkinsForAccount(account)
             }

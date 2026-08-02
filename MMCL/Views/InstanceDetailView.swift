@@ -87,7 +87,7 @@ struct InstanceDetailView: View {
         VStack(alignment: .leading, spacing: 10) {
             Picker("运行时", selection: javaRuntimeSelection) {
                 Text("自动选择（按实例版本）").tag(JavaRuntime.ID?.none)
-                ForEach(store.javaRuntimes) { runtime in
+                ForEach(store.javaRuntimes.filter { !store.isJavaRuntimeDisabled($0) }) { runtime in
                     Text(runtime.displayName).tag(Optional(runtime.id))
                 }
             }

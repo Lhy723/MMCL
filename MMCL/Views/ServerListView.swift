@@ -2,11 +2,10 @@ import SwiftUI
 
 struct ServerListView: View {
     @ObservedObject var store: LauncherStore
-    @State private var showingAddSheet = false
+    @State private var editor: ServerEditor?
     @State private var newServerName: String = ""
     @State private var newServerAddress: String = ""
     @State private var newServerPort: String = "25565"
-    @State private var editingServerID: UUID?
     @State private var appeared = false
 
     var body: some View {
@@ -29,9 +28,9 @@ struct ServerListView: View {
                 appeared = true
             }
         }
-        .sheet(isPresented: $showingAddSheet) {
+        .sheet(item: $editor) { editorState in
             VStack(alignment: .leading, spacing: 18) {
-                Text(editingServerID == nil ? "添加服务器" : "编辑服务器")
+                Text(editorState.serverID == nil ? "添加服务器" : "编辑服务器")
                     .font(.title2.weight(.semibold))
 
                 Form {
@@ -48,14 +47,17 @@ struct ServerListView: View {
                 HStack {
                     Spacer()
                     Button("取消") {
-                        showingAddSheet = false
+                        editor = nil
                     }
                     .keyboardShortcut(.cancelAction)
 
-                    Button(editingServerID == nil ? "添加" : "保存") {
-                        guard let instance = store.selectedInstance else { return }
+                    Button(editorState.serverID == nil ? "添加" : "保存") {
+                        guard let instance = store.selectedInstance else {
+                            editor = nil
+                            return
+                        }
                         let port = Int(newServerPort) ?? 25565
-                        if let editID = editingServerID,
+                        if let editID = editorState.serverID,
                            let index = store.serverList.firstIndex(where: { $0.id == editID }) {
                             var updated = store.serverList[index]
                             updated.name = newServerName
@@ -70,7 +72,7 @@ struct ServerListView: View {
                                 for: instance
                             )
                         }
-                        showingAddSheet = false
+                        editor = nil
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(newServerName.trimmingCharacters(in: .whitespaces).isEmpty ||
@@ -81,7 +83,10 @@ struct ServerListView: View {
             .padding(24)
             .frame(width: 420, height: 320)
         }
-        .onAppear {
+        .task {
+            // Defer the published server-list update until SwiftUI has
+            // finished the current view transaction.
+            await Task.yield()
             if let instance = store.selectedInstance {
                 store.loadServerList(for: instance)
             }
@@ -105,15 +110,15 @@ struct ServerListView: View {
     private var toolbar: some View {
         HStack(spacing: 12) {
             Button {
-                showingAddSheet = true
                 newServerName = ""
                 newServerAddress = ""
                 newServerPort = "25565"
-                editingServerID = nil
+                editor = ServerEditor(serverID: nil)
             } label: {
                 Label("添加服务器", systemImage: "plus")
             }
             .buttonStyle(.borderedProminent)
+            .accessibilityLabel("添加服务器")
 
             Button {
                 store.pingAllServers()
@@ -144,8 +149,7 @@ struct ServerListView: View {
                             newServerName = server.name
                             newServerAddress = server.address
                             newServerPort = "\(server.port)"
-                            editingServerID = server.id
-                            showingAddSheet = true
+                            editor = ServerEditor(serverID: server.id)
                         } onToggleFavorite: {
                             if let instance = store.selectedInstance {
                                 store.toggleServerFavorite(server, for: instance)
@@ -164,6 +168,11 @@ struct ServerListView: View {
             return a.name < b.name
         }
     }
+}
+
+private struct ServerEditor: Identifiable {
+    let id = UUID()
+    let serverID: UUID?
 }
 
 private struct ServerRow: View {
@@ -214,6 +223,8 @@ private struct ServerRow: View {
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
+            .accessibilityLabel("服务器操作")
+            .accessibilityHint("打开 Ping、编辑、收藏和删除操作")
         }
         .padding(.vertical, 4)
     }

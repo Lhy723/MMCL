@@ -4,7 +4,6 @@ struct LogViewerSheet: View {
     let instance: LauncherInstance
     @ObservedObject var store: LauncherStore
     @State private var logContent: String = ""
-    @State private var timer: Timer?
     @State private var appeared = false
 
     var body: some View {
@@ -14,7 +13,7 @@ struct LogViewerSheet: View {
                     .font(.headline)
                 Spacer()
                 Button {
-                    logContent = store.loadLogContent(for: instance)
+                    Task { logContent = await loadLogContent() }
                 } label: {
                     Label("刷新", systemImage: "arrow.clockwise")
                 }
@@ -29,22 +28,22 @@ struct LogViewerSheet: View {
                         .id("bottom")
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .onAppear {
-                    logContent = store.loadLogContent(for: instance)
+                .task(id: instance.id) {
+                    logContent = await loadLogContent()
                     proxy.scrollTo("bottom", anchor: .bottom)
-                    timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-                        let newContent = store.loadLogContent(for: instance)
-                        if newContent != logContent {
-                            logContent = newContent
-                            DispatchQueue.main.async {
-                                proxy.scrollTo("bottom", anchor: .bottom)
-                            }
+
+                    while !Task.isCancelled {
+                        do {
+                            try await Task.sleep(nanoseconds: 1_000_000_000)
+                        } catch {
+                            return
                         }
+
+                        let newContent = await loadLogContent()
+                        guard newContent != logContent else { continue }
+                        logContent = newContent
+                        proxy.scrollTo("bottom", anchor: .bottom)
                     }
-                }
-                .onDisappear {
-                    timer?.invalidate()
-                    timer = nil
                 }
             }
             .background(.black.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
@@ -58,7 +57,7 @@ struct LogViewerSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 700, height: 500, alignment: .top)
+        .frame(minWidth: 700, minHeight: 500, alignment: .top)
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 8)
         .onAppear {
@@ -66,5 +65,15 @@ struct LogViewerSheet: View {
                 appeared = true
             }
         }
+    }
+
+    private func loadLogContent() async -> String {
+        let logURL = instance.rootDirectory.appendingPathComponent("logs/latest.log")
+        return await Task.detached(priority: .utility) {
+            guard let data = try? Data(contentsOf: logURL) else {
+                return "暂无日志"
+            }
+            return String(decoding: data, as: UTF8.self)
+        }.value
     }
 }

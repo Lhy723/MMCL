@@ -1160,8 +1160,15 @@ protocol JavaRuntimeServicing {
     func bundledSearchLocations() -> [URL]
     func recommendedMajorVersion(for gameVersion: String) -> Int
     func parseJavaHomeVerboseOutput(_ output: String) -> [JavaRuntime]
+    func inspectJavaRuntime(at executableURL: URL) -> JavaRuntime?
     func discoverInstalledRuntimes() async throws -> [JavaRuntime]
     var portableJDKDirectory: URL { get }
+}
+
+extension JavaRuntimeServicing {
+    func inspectJavaRuntime(at executableURL: URL) -> JavaRuntime? {
+        nil
+    }
 }
 
 struct JavaRuntimeService: JavaRuntimeServicing {
@@ -1188,6 +1195,22 @@ struct JavaRuntimeService: JavaRuntimeServicing {
         output
             .split(whereSeparator: \.isNewline)
             .compactMap { parseJavaHomeLine(String($0)) }
+    }
+
+    func inspectJavaRuntime(at executableURL: URL) -> JavaRuntime? {
+        let executableURL = executableURL.standardizedFileURL
+        let fileManager = FileManager.default
+        guard executableURL.lastPathComponent == "java",
+              fileManager.fileExists(atPath: executableURL.path),
+              fileManager.isExecutableFile(atPath: executableURL.path)
+        else {
+            return nil
+        }
+
+        let home = executableURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return parseJavaHome(home: home, name: "手动添加 · \(home.lastPathComponent)")
     }
 
     static func parseJavaVersionOutput(_ output: String) -> (version: String, majorVersion: Int)? {

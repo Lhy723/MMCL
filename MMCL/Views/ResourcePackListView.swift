@@ -16,6 +16,7 @@ struct ResourcePackListView: View {
                 } label: {
                     Label("刷新", systemImage: "arrow.clockwise")
                 }
+                .accessibilityLabel("刷新资源包列表")
             }
 
             if packs.isEmpty {
@@ -39,6 +40,7 @@ struct ResourcePackListView: View {
                             Image(systemName: "trash")
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("删除 \(pack.fileName)")
                     }
                 }
             }

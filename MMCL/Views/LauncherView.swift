@@ -2,7 +2,6 @@ import SwiftUI
 
 struct LauncherView: View {
     @ObservedObject var store: LauncherStore
-    @State private var launchPulse = false
     @State private var appeared = false
 
     var body: some View {
@@ -13,7 +12,6 @@ struct LauncherView: View {
 
             if let instance = store.selectedInstance {
                 instanceCard(instance)
-                    .id(instance.id)
                     .padding(.horizontal)
                     .padding(.top, 16)
                     .transition(.asymmetric(
@@ -45,16 +43,6 @@ struct LauncherView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .navigationTitle("启动器")
-        .onChange(of: store.selectedInstance?.status) { _, newStatus in
-            if newStatus == .ready {
-                withAnimation(.easeOut(duration: 0.6).repeatCount(2, autoreverses: true)) {
-                    launchPulse = true
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                    launchPulse = false
-                }
-            }
-        }
     }
 
     // MARK: - Header
@@ -79,6 +67,7 @@ struct LauncherView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
+                .accessibilityLabel("打开 GitHub 仓库")
                 .help("GitHub 仓库")
             }
             instancePicker
@@ -111,6 +100,8 @@ struct LauncherView: View {
             .controlSize(.large)
             .frame(maxWidth: 400, alignment: .leading)
         }
+        .accessibilityLabel("当前实例")
+        .accessibilityValue(store.selectedInstance?.name ?? "未选择")
     }
 
     // MARK: - Instance Card
@@ -142,6 +133,7 @@ struct LauncherView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .accessibilityLabel("打开 \(instance.name) 的设置")
             }
 
             HStack(spacing: 16) {
@@ -216,11 +208,14 @@ struct LauncherView: View {
         Button {
             Task { await store.launchSelectedInstance() }
         } label: {
-            Label("启动游戏", systemImage: "play.fill")
-                .font(.title3.weight(.semibold))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-                .scaleEffect(launchPulse ? 1.02 : 1.0)
+            HStack {
+                Image(systemName: "play.fill")
+                    .symbolEffect(.pulse, value: store.selectedInstance?.status)
+                Text("启动游戏")
+            }
+            .font(.title3.weight(.semibold))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.large)

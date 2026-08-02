@@ -38,8 +38,8 @@ struct DownloadProgressView: View {
     private var controlBar: some View {
         HStack(spacing: 12) {
             Label("\(store.taskGroups.count) 个任务", systemImage: "square.stack.3d.up")
-            Label(store.speedTracker.bytesPerSecond > 0
-                  ? ByteCountFormatter.string(fromByteCount: store.speedTracker.bytesPerSecond, countStyle: .file) + "/s"
+            Label(store.downloadSpeedBytesPerSecond > 0
+                  ? ByteCountFormatter.string(fromByteCount: store.downloadSpeedBytesPerSecond, countStyle: .file) + "/s"
                   : "等待中",
                   systemImage: "speedometer")
             Label("\(store.downloadJobs.filter { $0.status == .completed }.count)/\(store.downloadJobs.count) 文件",
@@ -97,7 +97,6 @@ struct DownloadProgressView: View {
                         onResumeJob: { store.resumeJob(id: $0) },
                         onCancelJob: { store.cancelJob(id: $0) }
                     )
-                    .animation(.mmclSpring(response: 0.4, dampingFraction: 0.9, scale: store.animationDurationScale), value: group.status)
                 }
             }
             .listStyle(.inset)
@@ -135,59 +134,77 @@ private struct TaskGroupRow: View {
         group.jobs.filter { $0.status == .queued }
     }
 
+    private var statusAnimation: Animation? {
+        guard animationScale > 0 else { return nil }
+        return .easeInOut(duration: 0.18 * animationScale)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button(action: onToggle) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        statusIcon
-                        Text(group.name)
-                            .font(.headline)
-                            .lineLimit(1)
-                        Spacer()
-                        groupControlButtons
-                        Text(statusLabel)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    ProgressView(value: group.progress)
-                        .animation(.mmclSpring(response: 0.4, dampingFraction: 0.9, scale: animationScale), value: group.progress)
-
-                    HStack(spacing: 12) {
-                        Text("\(group.completedCount)/\(group.jobs.count) 文件")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        if group.totalBytes > 0 {
-                            Text(ByteCountFormatter.string(fromByteCount: group.completedBytes, countStyle: .file) + " / " +
-                                 ByteCountFormatter.string(fromByteCount: group.totalBytes, countStyle: .file))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Text("\(Int(group.progress * 100))%")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if let currentFile = group.currentFileName {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.down")
-                                .font(.caption2)
-                                .foregroundStyle(.blue)
-                            Text(currentFile)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 8) {
+                Button(action: onToggle) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            statusIcon
+                            Text(group.name)
+                                .font(.headline)
                                 .lineLimit(1)
+                            Spacer()
+                            Text(statusLabel)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .accessibilityHidden(true)
+                        }
+
+                        ProgressView(value: group.progress)
+                            .transaction { transaction in
+                                transaction.animation = nil
+                            }
+
+                        HStack(spacing: 12) {
+                            Text("\(group.completedCount)/\(group.jobs.count) 文件")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            if group.totalBytes > 0 {
+                                Text(ByteCountFormatter.string(fromByteCount: group.completedBytes, countStyle: .file) + " / " +
+                                     ByteCountFormatter.string(fromByteCount: group.totalBytes, countStyle: .file))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text("\(Int(group.progress * 100))%")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if let currentFile = group.currentFileName {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.down")
+                                    .font(.caption2)
+                                    .foregroundStyle(.blue)
+                                    .accessibilityHidden(true)
+                                Text(currentFile)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
                         }
                     }
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
                 }
-                .padding(.vertical, 4)
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel(isExpanded ? "收起 \(group.name)" : "展开 \(group.name)")
+                .accessibilityValue(statusLabel)
+                .accessibilityHint("显示下载文件详情")
+
+                groupControlButtons
+                    .padding(.top, 4)
             }
-            .buttonStyle(.plain)
 
             if isExpanded {
                 Divider()
@@ -196,6 +213,7 @@ private struct TaskGroupRow: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        .animation(statusAnimation, value: group.status)
     }
 
     @ViewBuilder
@@ -208,6 +226,7 @@ private struct TaskGroupRow: View {
                     .font(.caption)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("暂停此任务")
             .help("暂停此任务")
         }
         if group.status == .paused {
@@ -218,6 +237,7 @@ private struct TaskGroupRow: View {
                     .font(.caption)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("继续此任务")
             .help("继续此任务")
         }
         if group.status.isActive {
@@ -228,6 +248,7 @@ private struct TaskGroupRow: View {
                     .font(.caption)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("取消此任务")
             .help("取消此任务")
         }
     }
@@ -303,6 +324,7 @@ private struct TaskGroupRow: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("取消 \(job.title)")
                 .help("取消此文件")
                 if job.totalBytes > 0 {
                     Text("\(Int(job.progress * 100))%")
@@ -318,6 +340,7 @@ private struct TaskGroupRow: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("继续 \(job.title)")
                 .help("继续此文件")
             } else if job.status == .completed {
                 Text(ByteCountFormatter.string(fromByteCount: job.totalBytes, countStyle: .file))

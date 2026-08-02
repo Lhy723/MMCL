@@ -17,48 +17,71 @@ private final class ImageCache {
 
 // MARK: - Cached Async Image
 
-private struct CachedAsyncImage: View {
+private struct CachedAsyncImage<Placeholder: View>: View {
     let url: URL?
-    var placeholder: AnyView = AnyView(ProgressView())
+    let placeholder: () -> Placeholder
 
     @State private var image: NSImage?
-    @State private var isLoading = false
+    @State private var loadedURL: URL?
+    @State private var requestedURL: URL?
+
+    init(url: URL?, @ViewBuilder placeholder: @escaping () -> Placeholder) {
+        self.url = url
+        self.placeholder = placeholder
+    }
 
     var body: some View {
         Group {
-            if let image {
+            if let image, loadedURL == url {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
             } else {
-                placeholder
-                    .onAppear { load() }
+                placeholder()
             }
+        }
+        .task(id: url) {
+            await loadImage(for: url)
         }
     }
 
-    private func load() {
-        guard let url, !isLoading else { return }
+    private func loadImage(for url: URL?) async {
+        image = nil
+        loadedURL = nil
+        requestedURL = url
+
+        guard let url else { return }
         if let cached = ImageCache.shared.get(url) {
+            guard !Task.isCancelled, requestedURL == url else { return }
             image = cached
+            loadedURL = url
             return
         }
-        isLoading = true
-        Task {
-            guard let (data, _) = try? await URLSession.shared.data(from: url),
+
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            try Task.checkCancellation()
+            guard requestedURL == url else { return }
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200..<300).contains(httpResponse.statusCode),
                   let uiImage = NSImage(data: data) else {
-                isLoading = false
                 return
             }
+
             ImageCache.shared.set(uiImage, for: url)
             image = uiImage
+            loadedURL = url
+        } catch is CancellationError {
+            // The view was reused or removed before the image finished loading.
+        } catch {
+            // Keep the placeholder visible when the image cannot be loaded.
         }
     }
 }
 
 // MARK: - Community Source
 
-enum CommunitySource: String, CaseIterable, Identifiable {
+enum CommunitySource: String, CaseIterable, Identifiable, Equatable {
     case all = "全部"
     case modrinth = "Modrinth"
     case curseforge = "CurseForge"
@@ -68,7 +91,7 @@ enum CommunitySource: String, CaseIterable, Identifiable {
 
 // MARK: - Resource Category
 
-enum ResourceCategory: String, CaseIterable, Identifiable {
+enum ResourceCategory: String, CaseIterable, Identifiable, Equatable {
     case all = "全部"
     case technology = "科技"
     case magic = "魔法"
@@ -175,6 +198,24 @@ enum ResourceSearchItem: Identifiable {
     }
 }
 
+private struct ResourceSearchRequest: Equatable {
+    let requestID: UUID
+    let query: String
+    let index: String
+    let offset: Int
+    let appendResults: Bool
+    let source: CommunitySource
+    let version: String?
+    let loader: String?
+    let category: ResourceCategory
+}
+
+private struct ResourceSearchResponse {
+    let items: [ResourceSearchItem]
+    let total: Int
+    let errorMessage: String?
+}
+
 // MARK: - Resource Search View
 
 struct DownloadResourceSearchView: View {
@@ -184,13 +225,13 @@ struct DownloadResourceSearchView: View {
     let projectType: String
     let showLoaderFilter: Bool
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var searchText: String = ""
     @State private var selectedSource: CommunitySource = .all
     @State private var selectedVersion: String? = nil
     @State private var selectedLoader: String? = nil
     @State private var selectedCategory: ResourceCategory = .all
     @State private var searchResults: [ResourceSearchItem] = []
-    @State private var visibleIDs: Set<String> = []
     @State private var isLoading: Bool = false
     @State private var isLoadingMore: Bool = false
     @State private var errorMessage: String? = nil
@@ -198,6 +239,17 @@ struct DownloadResourceSearchView: View {
     @State private var currentOffset: Int = 0
     @State private var hasSearched: Bool = false
     @State private var appeared = false
+    @State private var activeSearchRequest = ResourceSearchRequest(
+        requestID: UUID(),
+        query: "",
+        index: "downloads",
+        offset: 0,
+        appendResults: false,
+        source: .all,
+        version: nil,
+        loader: nil,
+        category: .all
+    )
 
     private let commonVersions = ["全部", "1.21.x", "1.20.x", "1.19.x", "1.18.x", "1.16.5", "1.12.2", "1.7.10"]
     private let loaderOptions = ["任意", "Forge", "NeoForge", "Fabric", "Quilt"]
@@ -207,12 +259,11 @@ struct DownloadResourceSearchView: View {
             header
                 .padding(.horizontal)
                 .padding(.top)
-            instanceBar
-                .padding(.horizontal)
-                .padding(.top, 8)
-            searchBar
-                .padding(.horizontal)
-                .padding(.top, 8)
+            if projectType != "modpack" {
+                instanceBar
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+            }
             filterBar
                 .padding(.horizontal)
                 .padding(.top, 8)
@@ -222,13 +273,28 @@ struct DownloadResourceSearchView: View {
         .navigationTitle(title)
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 8)
+        .searchable(text: $searchText, placement: .toolbar, prompt: Text("搜索\(title)..."))
+        .onSubmit(of: .search) {
+            performSearch()
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    performSearch()
+                } label: {
+                    Label("搜索", systemImage: "magnifyingglass")
+                }
+                .disabled(searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityHint("提交当前搜索关键词")
+            }
+        }
         .onAppear {
-            withAnimation(.mmclSpring(response: 0.4, dampingFraction: 0.85, scale: store.animationDurationScale)) {
+            withAnimation(searchAnimation) {
                 appeared = true
             }
-            if searchResults.isEmpty {
-                loadPopular()
-            }
+        }
+        .task(id: activeSearchRequest) {
+            await executeSearch(activeSearchRequest)
         }
     }
 
@@ -253,6 +319,7 @@ struct DownloadResourceSearchView: View {
                 ForEach(store.instances) { instance in
                     HStack {
                         Image(systemName: "cube.box")
+                            .accessibilityHidden(true)
                         Text(instance.name)
                     }
                     .tag(Optional(instance.id))
@@ -272,26 +339,6 @@ struct DownloadResourceSearchView: View {
             }
 
             Spacer()
-        }
-    }
-
-    // MARK: - Search Bar
-
-    private var searchBar: some View {
-        HStack {
-            TextField("搜索\(title)...", text: $searchText)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit {
-                    performSearch()
-                }
-
-            Button {
-                performSearch()
-            } label: {
-                Label("搜索", systemImage: "magnifyingglass")
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(searchText.trimmingCharacters(in: .whitespaces).isEmpty)
         }
     }
 
@@ -360,18 +407,7 @@ struct DownloadResourceSearchView: View {
                     LazyVStack(spacing: 0) {
                         ForEach(searchResults) { item in
                             resourceRow(item)
-                                .opacity(visibleIDs.contains(item.id) ? 1 : 0)
-                                .offset(x: visibleIDs.contains(item.id) ? 0 : 20)
-                                .onAppear {
-                                    if !visibleIDs.contains(item.id) {
-                                        _ = withAnimation(.mmclSpring(response: 0.5, dampingFraction: 0.85, scale: store.animationDurationScale)) {
-                                            visibleIDs.insert(item.id)
-                                        }
-                                    }
-                                }
-                                .onDisappear {
-                                    visibleIDs.remove(item.id)
-                                }
+                                .transition(.opacity.combined(with: .move(edge: .trailing)))
                         }
 
                         if !searchResults.isEmpty && currentOffset < totalHits {
@@ -391,7 +427,6 @@ struct DownloadResourceSearchView: View {
                     }
                     .padding(.horizontal)
                 }
-                .animation(.mmclSpring(response: 0.4, dampingFraction: 0.85, scale: store.animationDurationScale), value: searchResults.count)
             }
         }
     }
@@ -401,6 +436,8 @@ struct DownloadResourceSearchView: View {
             iconView(for: item)
                 .frame(width: 48, height: 48)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .accessibilityElement()
+                .accessibilityLabel("\(item.title) 图标")
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
@@ -443,10 +480,12 @@ struct DownloadResourceSearchView: View {
             Button {
                 installItem(item)
             } label: {
-                Label("安装", systemImage: "arrow.down.circle")
+                Label(projectType == "modpack" ? "查看" : "安装", systemImage: "arrow.down.circle")
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
+            .accessibilityLabel("\(projectType == "modpack" ? "查看" : "安装") \(item.title)")
+            .accessibilityHint(projectType == "modpack" ? "打开整合包详情" : "打开版本列表")
         }
     }
 
@@ -455,9 +494,9 @@ struct DownloadResourceSearchView: View {
         switch item {
         case .modrinth(let result):
             if let url = result.iconURLResolved {
-                CachedAsyncImage(url: url, placeholder: AnyView(
+                CachedAsyncImage(url: url) {
                     placeholderIcon(tint: result.tintColor)
-                ))
+                }
             } else {
                 placeholderIcon(tint: result.tintColor)
             }
@@ -472,6 +511,7 @@ struct DownloadResourceSearchView: View {
             .overlay {
                 Image(systemName: "puzzlepiece.extension")
                     .foregroundStyle(tint ?? .secondary)
+                    .accessibilityHidden(true)
             }
     }
 
@@ -502,88 +542,168 @@ struct DownloadResourceSearchView: View {
     // MARK: - Search
 
     private func performSearch() {
-        let query = searchText.trimmingCharacters(in: .whitespaces)
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return }
 
         isLoading = true
         errorMessage = nil
         hasSearched = true
         currentOffset = 0
-        visibleIDs = []
-
-        Task {
-            let result = await searchModrinth(query: query, offset: 0)
-            searchResults = result.items
-            totalHits = result.total
-            isLoading = false
-        }
-    }
-
-    private func loadPopular() {
-        isLoading = true
-        errorMessage = nil
-        hasSearched = false
-        currentOffset = 0
-        visibleIDs = []
-
-        Task {
-            let result = await searchModrinth(query: "", index: "downloads", offset: 0)
-            searchResults = result.items
-            totalHits = result.total
-            isLoading = false
-        }
+        isLoadingMore = false
+        activeSearchRequest = makeSearchRequest(
+            query: query,
+            index: "relevance",
+            offset: 0,
+            appendResults: false
+        )
     }
 
     private func loadMore() {
-        guard !isLoadingMore else { return }
-        isLoadingMore = true
+        guard !isLoadingMore, !isLoading else { return }
         let nextOffset = currentOffset + 20
+        guard nextOffset < totalHits else { return }
 
-        Task {
-            let query = hasSearched ? searchText.trimmingCharacters(in: .whitespaces) : ""
-            let index = hasSearched ? "relevance" : "downloads"
-            let result = await searchModrinth(query: query, index: index, offset: nextOffset)
-            searchResults.append(contentsOf: result.items)
-            currentOffset = nextOffset
-            totalHits = result.total
+        isLoadingMore = true
+        activeSearchRequest = ResourceSearchRequest(
+            requestID: UUID(),
+            query: activeSearchRequest.query,
+            index: activeSearchRequest.index,
+            offset: nextOffset,
+            appendResults: true,
+            source: activeSearchRequest.source,
+            version: activeSearchRequest.version,
+            loader: activeSearchRequest.loader,
+            category: activeSearchRequest.category
+        )
+    }
+
+    private func makeSearchRequest(
+        query: String,
+        index: String,
+        offset: Int,
+        appendResults: Bool
+    ) -> ResourceSearchRequest {
+        ResourceSearchRequest(
+            requestID: UUID(),
+            query: query,
+            index: index,
+            offset: offset,
+            appendResults: appendResults,
+            source: selectedSource,
+            version: selectedVersion,
+            loader: selectedLoader,
+            category: selectedCategory
+        )
+    }
+
+    private var searchAnimation: Animation? {
+        guard !reduceMotion, store.animationDurationScale > 0 else { return nil }
+        return .mmclSpring(response: 0.4, dampingFraction: 0.85, scale: store.animationDurationScale)
+    }
+
+    private func executeSearch(_ request: ResourceSearchRequest) async {
+        if request.appendResults {
+            isLoadingMore = true
+        } else {
+            isLoading = true
             isLoadingMore = false
+        }
+
+        do {
+            let result = try await searchModrinth(request: request)
+            try Task.checkCancellation()
+            guard activeSearchRequest.requestID == request.requestID else { return }
+
+            withAnimation(searchAnimation) {
+                if request.appendResults {
+                    searchResults.append(contentsOf: result.items)
+                } else {
+                    searchResults = result.items
+                }
+                currentOffset = request.offset
+                totalHits = result.total
+                errorMessage = result.errorMessage
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled, activeSearchRequest.requestID == request.requestID else { return }
+            withAnimation(searchAnimation) {
+                if !request.appendResults {
+                    searchResults = []
+                    currentOffset = 0
+                    totalHits = 0
+                }
+                errorMessage = error.localizedDescription
+            }
+        }
+
+        guard !Task.isCancelled else { return }
+        if request.appendResults {
+            isLoadingMore = false
+        } else {
+            isLoading = false
         }
     }
 
-    private func searchModrinth(query: String, index: String = "relevance", offset: Int) async -> (items: [ResourceSearchItem], total: Int) {
+    private func searchModrinth(request: ResourceSearchRequest) async throws -> ResourceSearchResponse {
         var items: [ResourceSearchItem] = []
         var total = 0
+        var errorMessages: [String] = []
 
-        if selectedSource == .all || selectedSource == .modrinth {
+        if request.source == .all || request.source == .modrinth {
             do {
+                try Task.checkCancellation()
                 var facets: [[String]] = [["project_type:\(projectType)"]]
-                if let categoryFacet = selectedCategory.modrinthFacet {
+                if let categoryFacet = request.category.modrinthFacet {
                     facets.append([categoryFacet])
                 }
-                if let selectedLoader,
+                if let selectedLoader = request.loader,
                    let loader = GameLoader(rawValue: selectedLoader),
                    let loaderFacet = loader.modrinthLoaderName {
                     facets.append(["categories:\(loaderFacet)"])
                 }
-                let response = try await store.modrinthService.search(query: query, facets: facets, index: index, offset: offset)
+                let response = try await store.modrinthService.search(
+                    query: request.query,
+                    facets: facets,
+                    index: request.index,
+                    offset: request.offset
+                )
+                try Task.checkCancellation()
                 items.append(contentsOf: response.hits.map { .modrinth($0) })
                 total = response.totalHits
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
-                errorMessage = "Modrinth: \(error.localizedDescription)"
+                errorMessages.append("Modrinth: \(error.localizedDescription)")
             }
         }
 
         // CurseForge (only when API key is provided)
-        if offset == 0 && !store.curseForgeApiKey.isEmpty && (selectedSource == .all || selectedSource == .curseforge) {
+        if request.offset == 0 && !store.curseForgeApiKey.isEmpty && (request.source == .all || request.source == .curseforge) {
             do {
-                let gameVersion = selectedVersion?.replacingOccurrences(of: ".x", with: "")
-                let cfResults = try await store.curseForgeService.search(query: query, classId: curseforgeClassId, gameVersion: gameVersion, apiKey: store.curseForgeApiKey)
+                try Task.checkCancellation()
+                let gameVersion = request.version?.replacingOccurrences(of: ".x", with: "")
+                let cfResults = try await store.curseForgeService.search(
+                    query: request.query,
+                    classId: curseforgeClassId,
+                    gameVersion: gameVersion,
+                    apiKey: store.curseForgeApiKey
+                )
+                try Task.checkCancellation()
                 items.append(contentsOf: cfResults.map { .curseforge($0) })
             } catch {
+                if error is CancellationError {
+                    throw CancellationError()
+                }
                 // silently ignore CurseForge errors when key is provided
             }
         }
 
-        return (items, total)
+        return ResourceSearchResponse(
+            items: items,
+            total: total,
+            errorMessage: errorMessages.isEmpty ? nil : errorMessages.joined(separator: "\n")
+        )
     }
 }

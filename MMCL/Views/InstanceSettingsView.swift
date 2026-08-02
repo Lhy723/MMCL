@@ -38,6 +38,9 @@ struct InstanceSettingsView: View {
                 appeared = true
             }
         }
+        .onChange(of: instance.profile) { _, newProfile in
+            syncDraft(from: newProfile)
+        }
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button {
@@ -252,6 +255,14 @@ struct InstanceSettingsView: View {
             javaRuntimeID: instance.profile.javaRuntimeID,
             javaRuntimePath: instance.profile.javaRuntimePath
         ))
+    }
+
+    private func syncDraft(from profile: LaunchProfile) {
+        offlineUsername = profile.offlineUsername
+        memoryMegabytes = profile.memoryMegabytes
+        jvmArgumentsText = profile.jvmArguments.joined(separator: " ")
+        useGeneratedJVMArguments = profile.useGeneratedJVMArguments
+        useOptimizingJVMArguments = profile.useOptimizingJVMArguments
     }
 
     private static let dateFormatter: DateFormatter = {

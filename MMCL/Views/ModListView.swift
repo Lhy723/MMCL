@@ -17,6 +17,7 @@ struct ModListView: View {
                 } label: {
                     Label("刷新", systemImage: "arrow.clockwise")
                 }
+                .accessibilityLabel("刷新 Mod 列表")
             }
 
             if mods.isEmpty {
@@ -42,6 +43,7 @@ struct ModListView: View {
                         ))
                         .toggleStyle(.switch)
                         .labelsHidden()
+                        .accessibilityLabel("启用 \(mod.fileName)")
                         Button(role: .destructive) {
                             store.deleteMod(for: instance, mod: mod)
                             mods = store.scanInstalledMods(for: instance)
@@ -49,6 +51,7 @@ struct ModListView: View {
                             Image(systemName: "trash")
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("删除 \(mod.fileName)")
                     }
                 }
             }

@@ -14,6 +14,7 @@ struct ShaderPackListView: View {
                 Button {
                     packs = store.scanShaderPacks(for: instance)
                 } label: { Label("刷新", systemImage: "arrow.clockwise") }
+                .accessibilityLabel("刷新光影包列表")
             }
             if packs.isEmpty {
                 ContentUnavailableView("没有已安装的光影包", systemImage: "sun.max", description: Text("手动将光影包放入 shaderpacks 目录"))
@@ -32,6 +33,7 @@ struct ShaderPackListView: View {
                             packs = store.scanShaderPacks(for: instance)
                         } label: { Image(systemName: "trash") }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("删除 \(pack.fileName)")
                     }
                 }
             }

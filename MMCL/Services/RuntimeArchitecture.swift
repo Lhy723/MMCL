@@ -1,28 +1,22 @@
 import Foundation
+import Darwin
 
 extension RuntimeArchitecture {
     /// Architecture of the current launcher process as reported by uname.
-    /// This is intentionally runtime based instead of `#if arch(...)`, which
-    /// can describe the build slice rather than the process actually running
-    /// under Rosetta.
-    static var currentSystem: RuntimeArchitecture {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/uname")
-        process.arguments = ["-m"]
-        let outputPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = Pipe()
+    /// This is intentionally read without spawning a child process because
+    /// this value is also consulted while SwiftUI is evaluating view bodies.
+    /// A synchronous `Process.waitUntilExit()` there can crash the launcher
+    /// and needlessly repeats the architecture probe on every render.
+    static let currentSystem: RuntimeArchitecture = {
+        var systemInfo = utsname()
+        guard uname(&systemInfo) == 0 else { return .unknown }
 
-        guard (try? process.run()) != nil else { return .unknown }
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return .unknown }
-
-        let output = String(
-            decoding: outputPipe.fileHandleForReading.readDataToEndOfFile(),
-            as: UTF8.self
-        )
-        return architecture(from: output)
-    }
+        let machine = withUnsafeBytes(of: &systemInfo.machine) { bytes in
+            let machineBytes = bytes.prefix { $0 != 0 }
+            return String(decoding: machineBytes, as: UTF8.self)
+        }
+        return architecture(from: machine)
+    }()
 
     /// Inspects the actual Java executable instead of assuming it has the
     /// same architecture as MMCL. This matters when both native and Rosetta

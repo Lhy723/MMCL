@@ -32,6 +32,7 @@ struct DownloadVanillaView: View {
                 appeared = true
             }
         }
+        .searchable(text: $searchText, placement: .toolbar, prompt: "搜索版本")
         .task {
             if store.availableVersions.isEmpty {
                 await store.refreshAvailableVersions()
@@ -54,9 +55,6 @@ struct DownloadVanillaView: View {
 
     private var filterBar: some View {
         HStack(spacing: 12) {
-            TextField("搜索版本...", text: $searchText)
-                .textFieldStyle(.roundedBorder)
-
             Picker("类型", selection: $versionFilter) {
                 Text("全部").tag(MinecraftVersion.ReleaseType?.none)
                 ForEach([MinecraftVersion.ReleaseType.release, .snapshot, .oldBeta, .oldAlpha], id: \.self) { type in
@@ -127,8 +125,8 @@ struct DownloadVanillaView: View {
 
             HStack(spacing: 16) {
                 Label("\(store.taskGroups.count) 个安装任务", systemImage: "square.stack.3d.up")
-                Label(store.speedTracker.bytesPerSecond > 0
-                      ? ByteCountFormatter.string(fromByteCount: store.speedTracker.bytesPerSecond, countStyle: .file) + "/s"
+                Label(store.downloadSpeedBytesPerSecond > 0
+                      ? ByteCountFormatter.string(fromByteCount: store.downloadSpeedBytesPerSecond, countStyle: .file) + "/s"
                       : "等待中",
                       systemImage: "speedometer")
                 if let current = store.taskGroups.first(where: { $0.status == .running })?.currentFileName {
@@ -243,19 +241,13 @@ struct DownloadVanillaView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-            LazyVGrid(columns: [
-                GridItem(.flexible()),
-                GridItem(.flexible()),
-                GridItem(.flexible()),
-                GridItem(.flexible()),
-            ], spacing: 8) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 5), spacing: 8) {
                 loaderCard(name: "Forge", icon: "hammer", version: version.id)
                 loaderCard(name: "NeoForge", icon: "hammer.fill", version: version.id)
                 loaderCard(name: "Fabric", icon: "shippingbox", version: version.id)
                 loaderCard(name: "Quilt", icon: "shippingbox.fill", version: version.id)
+                optifineCard(for: version)
             }
-
-            optifineCard(for: version)
 
             HStack {
                 Spacer()
@@ -315,19 +307,19 @@ struct DownloadVanillaView: View {
                 selectedLoaderVersions[version.id] = "optifine"
             }
         } label: {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
+            VStack(spacing: 4) {
+                Image(systemName: "sparkles")
+                    .font(.title2)
+                HStack(spacing: 3) {
                     Text("OptiFine")
-                        .font(.subheadline.weight(.medium))
-                    Text("与部分 Mod 加载器不兼容，请注意版本搭配")
-                        .font(.caption)
+                        .font(.caption.weight(.medium))
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption2)
                         .foregroundStyle(.orange)
                 }
-                Spacer()
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(isSelected ? .green : .secondary)
             }
-            .padding(10)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
             .background(isSelected ? Color.orange.opacity(0.1) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
@@ -336,6 +328,7 @@ struct DownloadVanillaView: View {
             .animation(.mmclSpring(response: 0.35, dampingFraction: 0.85, scale: store.animationDurationScale), value: isSelected)
         }
         .buttonStyle(.plain)
+        .help("与部分 Mod 加载器不兼容，请注意版本搭配")
     }
 
     // MARK: - Helpers

@@ -13,6 +13,38 @@ final class LauncherStore: ObservableObject {
         case settings
     }
 
+    enum PresentedSheet: Identifiable, Equatable {
+        case createInstance
+        case log(instanceID: LauncherInstance.ID)
+        case modrinth(project: ModrinthSearchResult)
+        case rename(instanceID: LauncherInstance.ID)
+        case mods(instanceID: LauncherInstance.ID)
+        case resourcePacks(instanceID: LauncherInstance.ID)
+        case shaderPacks(instanceID: LauncherInstance.ID)
+        case jdkInstall
+
+        var id: String {
+            switch self {
+            case .createInstance:
+                return "create-instance"
+            case .log(let instanceID):
+                return "log-\(instanceID.uuidString)"
+            case .modrinth(let project):
+                return "modrinth-\(project.id)"
+            case .rename(let instanceID):
+                return "rename-\(instanceID.uuidString)"
+            case .mods(let instanceID):
+                return "mods-\(instanceID.uuidString)"
+            case .resourcePacks(let instanceID):
+                return "resource-packs-\(instanceID.uuidString)"
+            case .shaderPacks(let instanceID):
+                return "shader-packs-\(instanceID.uuidString)"
+            case .jdkInstall:
+                return "jdk-install"
+            }
+        }
+    }
+
     @Published var instances: [LauncherInstance]
     @Published var downloadJobs: [DownloadJob]
     @Published var featuredProjects: [ContentProject]
@@ -30,7 +62,7 @@ final class LauncherStore: ObservableObject {
         get {
             guard let selectedInstance,
                   selectedInstance.profile.javaSelectionMode == .manual else { return nil }
-            return javaRuntime(for: selectedInstance)?.id ?? selectedInstance.profile.javaRuntimeID
+            return javaRuntime(for: selectedInstance)?.id
         }
         set { setJavaSelectionForSelectedInstance(runtimeID: newValue) }
     }
@@ -69,14 +101,10 @@ final class LauncherStore: ObservableObject {
     @Published var useHighPerformanceGPU: Bool = false
     @Published var memoryAutoConfig: Bool = true
     @Published var customJavaPath: String = ""
-    @Published var showingCreateSheet: Bool = false
-    @Published var showingLogSheet: Bool = false
-    @Published var showingRenameSheet: Bool = false
-    @Published var showingModList: Bool = false
-    @Published var showingResourcePacks: Bool = false
-    @Published var showingShaderPacks: Bool = false
+    @Published private(set) var disabledJavaRuntimePaths: Set<String>
+    private var additionalJavaRuntimePaths: Set<String>
+    @Published var presentedSheet: PresentedSheet?
     @Published var selectedInstanceSettingsID: LauncherInstance.ID?
-    @Published var showingJDKInstall: Bool = false
     @Published var availableSkins: [SkinInfo] = []
     @Published var serverList: [ServerInfo] = []
 
@@ -87,7 +115,6 @@ final class LauncherStore: ObservableObject {
 
     @Published var modrinthSearchResults: [ModrinthSearchResult] = []
     @Published var modrinthSearchQuery: String = ""
-    @Published var showingModrinthDetail: Bool = false
     @Published var selectedModrinthProject: ModrinthSearchResult?
 
     @Published var curseForgeResults: [CurseForgeSearchResult] = []
@@ -123,9 +150,15 @@ final class LauncherStore: ObservableObject {
     let speedTracker = DownloadSpeedTracker()
     private var queuedDownloadIDs: [UUID] = []
     private var activeDownloadCount: Int = 0
+    private var lastDownloadProgressUpdateAt = Date.distantPast
+    private var lastReportedDownloadBytes: [UUID: Int64] = [:]
+    private var launchMonitorTask: Task<Void, Never>?
 
-    var taskGroups: [DownloadTaskGroup] {
-        let grouped = Dictionary(grouping: downloadJobs) { $0.taskGroupID ?? $0.id }
+    @Published private(set) var taskGroups: [DownloadTaskGroup]
+    @Published private(set) var downloadSpeedBytesPerSecond: Int64 = 0
+
+    private static func makeTaskGroups(from jobs: [DownloadJob]) -> [DownloadTaskGroup] {
+        let grouped = Dictionary(grouping: jobs) { $0.taskGroupID ?? $0.id }
         return grouped.map { key, jobs in
             DownloadTaskGroup(
                 id: key,
@@ -143,8 +176,20 @@ final class LauncherStore: ObservableObject {
                 case .completed: return 4
                 }
             }
-            return order(a.status) < order(b.status)
+            let leftOrder = order(a.status)
+            let rightOrder = order(b.status)
+            if leftOrder != rightOrder { return leftOrder < rightOrder }
+            return a.name.localizedStandardCompare(b.name) == .orderedAscending
         }
+    }
+
+    private func replaceDownloadJobs(_ jobs: [DownloadJob]) {
+        downloadJobs = jobs
+        taskGroups = Self.makeTaskGroups(from: jobs)
+    }
+
+    private func refreshTaskGroups() {
+        taskGroups = Self.makeTaskGroups(from: downloadJobs)
     }
 
     private let launchService: LaunchServicing
@@ -165,6 +210,9 @@ final class LauncherStore: ObservableObject {
     private let skinService: SkinServicing
     private let serverListService: ServerListServicing
     private let accountPersistence: AccountPersistence
+
+    private static let disabledJavaRuntimePathsKey = "disabledJavaRuntimePaths"
+    private static let additionalJavaRuntimePathsKey = "additionalJavaRuntimePaths"
 
     init(
         instances: [LauncherInstance] = [],
@@ -225,6 +273,7 @@ final class LauncherStore: ObservableObject {
         self.selectedDownloadSource = selectedDownloadSource
         self.javaRuntimes = javaRuntimes
         self.availableVersions = availableVersions
+        self.taskGroups = Self.makeTaskGroups(from: downloadJobs)
         self.launchService = resolvedLaunchService
         self.downloadService = resolvedDownloadService
         self.versionService = resolvedVersionService
@@ -244,6 +293,12 @@ final class LauncherStore: ObservableObject {
         self.serverListService = resolvedServerListService
         self.accountPersistence = resolvedAccountPersistence
         self.selectedSection = .launcher
+        self.disabledJavaRuntimePaths = Set(
+            UserDefaults.standard.stringArray(forKey: Self.disabledJavaRuntimePathsKey) ?? []
+        )
+        self.additionalJavaRuntimePaths = Set(
+            UserDefaults.standard.stringArray(forKey: Self.additionalJavaRuntimePathsKey) ?? []
+        )
 
         // Restore last selected instance
         if let savedID = UserDefaults.standard.string(forKey: "lastSelectedInstanceID"),
@@ -270,6 +325,86 @@ final class LauncherStore: ObservableObject {
     var selectedInstance: LauncherInstance? {
         guard let id = launcherSelectedInstanceID else { return nil }
         return instances.first { $0.id == id }
+    }
+
+    // Compatibility-facing flags keep existing callers simple while routing
+    // every sheet through one item-driven presentation state.
+    var showingCreateSheet: Bool {
+        get { if case .createInstance = presentedSheet { return true }; return false }
+        set {
+            if newValue {
+                presentedSheet = .createInstance
+            } else if case .createInstance = presentedSheet {
+                presentedSheet = nil
+            }
+        }
+    }
+
+    var showingLogSheet: Bool {
+        get { if case .log = presentedSheet { return true }; return false }
+        set { setInstanceSheet(newValue, make: PresentedSheet.log) }
+    }
+
+    var showingRenameSheet: Bool {
+        get { if case .rename = presentedSheet { return true }; return false }
+        set { setInstanceSheet(newValue, make: PresentedSheet.rename) }
+    }
+
+    var showingModList: Bool {
+        get { if case .mods = presentedSheet { return true }; return false }
+        set { setInstanceSheet(newValue, make: PresentedSheet.mods) }
+    }
+
+    var showingResourcePacks: Bool {
+        get { if case .resourcePacks = presentedSheet { return true }; return false }
+        set { setInstanceSheet(newValue, make: PresentedSheet.resourcePacks) }
+    }
+
+    var showingShaderPacks: Bool {
+        get { if case .shaderPacks = presentedSheet { return true }; return false }
+        set { setInstanceSheet(newValue, make: PresentedSheet.shaderPacks) }
+    }
+
+    var showingJDKInstall: Bool {
+        get { if case .jdkInstall = presentedSheet { return true }; return false }
+        set {
+            if newValue {
+                presentedSheet = .jdkInstall
+            } else if case .jdkInstall = presentedSheet {
+                presentedSheet = nil
+            }
+        }
+    }
+
+    var showingModrinthDetail: Bool {
+        get { if case .modrinth = presentedSheet { return true }; return false }
+        set {
+            if newValue, let project = selectedModrinthProject {
+                presentedSheet = .modrinth(project: project)
+            } else if !newValue, case .modrinth = presentedSheet {
+                presentedSheet = nil
+            }
+        }
+    }
+
+    private var selectedPresentationInstanceID: LauncherInstance.ID? {
+        selectedInstance?.id ?? selectedInstanceSettingsID
+    }
+
+    private func setInstanceSheet(
+        _ isPresented: Bool,
+        make: (LauncherInstance.ID) -> PresentedSheet
+    ) {
+        if isPresented, let instanceID = selectedPresentationInstanceID {
+            presentedSheet = make(instanceID)
+        } else if !isPresented {
+            switch presentedSheet {
+            case .log, .rename, .mods, .resourcePacks, .shaderPacks:
+                presentedSheet = nil
+            default:
+                break
+            }
+        }
     }
 
     func verifyInstanceStatuses() {
@@ -582,7 +717,10 @@ final class LauncherStore: ObservableObject {
     /// instance switch or a runtime scan. The actual value is derived from
     /// the current instance and runtime list, so it cannot become stale.
     func recalculateJavaSelectionForSelectedInstance() {
-        objectWillChange.send()
+        // `selectedJavaRuntime` is derived from the published instance and
+        // runtime collections. Keep this compatibility hook side-effect free;
+        // manually publishing from a SwiftUI callback can publish while a
+        // view update is already in progress.
     }
 
     private func persistInstance(at index: Int) {
@@ -1172,7 +1310,7 @@ extension LauncherStore {
                 instance: launchInstance,
                 source: selectedDownloadSource
             )
-            downloadJobs = jobs
+            replaceDownloadJobs(jobs)
             var validationError: Error?
             var installationIsComplete = false
             if jobs.isEmpty {
@@ -1235,7 +1373,16 @@ extension LauncherStore {
         isScanningJava = true
         defer { isScanningJava = false }
         do {
-            let runtimes = try await javaRuntimeService.discoverInstalledRuntimes()
+            var runtimes = try await javaRuntimeService.discoverInstalledRuntimes()
+            let discoveredPaths = Set(runtimes.map { runtimeKey(for: $0) })
+            for path in additionalJavaRuntimePaths where !discoveredPaths.contains(path) {
+                guard let runtime = javaRuntimeService.inspectJavaRuntime(
+                    at: URL(fileURLWithPath: path)
+                ) else {
+                    continue
+                }
+                runtimes.append(runtime)
+            }
             javaRuntimes = runtimes
             recalculateJavaSelectionForSelectedInstance()
             diagnostics.insert(
@@ -1262,6 +1409,156 @@ extension LauncherStore {
             )
             return []
         }
+    }
+
+    func isJavaRuntimeDisabled(_ runtime: JavaRuntime) -> Bool {
+        disabledJavaRuntimePaths.contains(runtimeKey(for: runtime))
+    }
+
+    func toggleJavaRuntimeDisabled(_ runtime: JavaRuntime) {
+        let key = runtimeKey(for: runtime)
+        if disabledJavaRuntimePaths.contains(key) {
+            disabledJavaRuntimePaths.remove(key)
+        } else {
+            disabledJavaRuntimePaths.insert(key)
+        }
+        persistJavaRuntimePreferences()
+    }
+
+    @discardableResult
+    func addJavaRuntime(at executableURL: URL) -> Bool {
+        let normalizedURL = executableURL.standardizedFileURL
+        guard let runtime = javaRuntimeService.inspectJavaRuntime(at: normalizedURL) else {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "添加 Java 失败",
+                    severity: .error,
+                    summary: "所选文件不是可识别的 Java 可执行文件：\(normalizedURL.path)",
+                    suggestedActions: ["选择 JDK 内的 bin/java 文件", "确认文件具有可执行权限"]
+                ),
+                at: 0
+            )
+            return false
+        }
+
+        let key = runtimeKey(for: runtime)
+        additionalJavaRuntimePaths.insert(key)
+        customJavaPath = normalizedURL.path
+        if let index = javaRuntimes.firstIndex(where: { runtimeKey(for: $0) == key }) {
+            javaRuntimes[index] = runtime
+        } else {
+            javaRuntimes.append(runtime)
+        }
+        persistJavaRuntimePreferences()
+        diagnostics.insert(
+            DiagnosticReport(
+                title: "Java 已添加",
+                severity: .info,
+                summary: "已添加 Java \(runtime.majorVersion)：\(runtime.executableURL.path)",
+                suggestedActions: ["可在实例设置中选择该 Java", "也可以在 Java 管理中禁用它"]
+            ),
+            at: 0
+        )
+        return true
+    }
+
+    func canDeleteJavaRuntime(_ runtime: JavaRuntime) -> Bool {
+        portableInstallationRoot(for: runtime.executableURL) != nil
+    }
+
+    func removeJavaRuntime(_ runtime: JavaRuntime) {
+        guard let installationRoot = portableInstallationRoot(for: runtime.executableURL) else {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "无法删除 Java",
+                    severity: .warning,
+                    summary: "系统或第三方 Java 不由 MMCL 管理，不能直接删除。",
+                    suggestedActions: ["使用「禁用」让 MMCL 不再选择它", "如需删除，请使用原安装器或系统工具"]
+                ),
+                at: 0
+            )
+            return
+        }
+
+        do {
+            try FileManager.default.removeItem(at: installationRoot)
+            let key = runtimeKey(for: runtime)
+            additionalJavaRuntimePaths.remove(key)
+            disabledJavaRuntimePaths.remove(key)
+            javaRuntimes.removeAll { runtimeKey(for: $0) == key }
+            persistJavaRuntimePreferences()
+            Task { await refreshJavaRuntimes() }
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "Java 已删除",
+                    severity: .info,
+                    summary: "已删除便携版 Java \(runtime.majorVersion)。",
+                    suggestedActions: []
+                ),
+                at: 0
+            )
+        } catch {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "删除 Java 失败",
+                    severity: .error,
+                    summary: error.localizedDescription,
+                    suggestedActions: ["确认文件未被其他程序占用", "检查目录权限"]
+                ),
+                at: 0
+            )
+        }
+    }
+
+    func openJavaDirectory(for runtime: JavaRuntime) {
+        let javaHome = runtime.executableURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        NSWorkspace.shared.open(javaHome)
+    }
+
+    func openPortableJavaDirectory() {
+        NSWorkspace.shared.open(javaRuntimeService.portableJDKDirectory)
+    }
+
+    private func runtimeKey(for runtime: JavaRuntime) -> String {
+        runtimeKey(for: runtime.executableURL)
+    }
+
+    private func runtimeKey(for executableURL: URL) -> String {
+        executableURL.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    private func persistJavaRuntimePreferences() {
+        UserDefaults.standard.set(
+            Array(disabledJavaRuntimePaths).sorted(),
+            forKey: Self.disabledJavaRuntimePathsKey
+        )
+        UserDefaults.standard.set(
+            Array(additionalJavaRuntimePaths).sorted(),
+            forKey: Self.additionalJavaRuntimePathsKey
+        )
+    }
+
+    private func portableInstallationRoot(for executableURL: URL) -> URL? {
+        let portableRoot = javaRuntimeService.portableJDKDirectory
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let javaHome = executableURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let rootPath = portableRoot.path
+        let homePath = javaHome.path
+        guard homePath.hasPrefix(rootPath + "/") else { return nil }
+
+        let relativePath = String(homePath.dropFirst(rootPath.count + 1))
+        guard let firstComponent = relativePath.split(separator: "/").first,
+              !firstComponent.isEmpty else {
+            return nil
+        }
+        return portableRoot.appendingPathComponent(String(firstComponent), isDirectory: true)
     }
 
     // MARK: - Portable JDK Install
@@ -1335,19 +1632,17 @@ extension LauncherStore {
     }
 
     func removePortableJDK(at url: URL) {
-        let fileManager = FileManager.default
-        // Find the JDK directory from the executable URL (go up to bin, then to JDK root)
-        let jdkHome = url.deletingLastPathComponent().deletingLastPathComponent()
-        do {
-            try fileManager.removeItem(at: jdkHome)
-            Task { await refreshJavaRuntimes() }
-        } catch {
+        if let runtime = javaRuntimes.first(where: {
+            runtimeKey(for: $0) == runtimeKey(for: url)
+        }) {
+            removeJavaRuntime(runtime)
+        } else {
             diagnostics.insert(
                 DiagnosticReport(
                     title: "删除 Java 失败",
                     severity: .error,
-                    summary: error.localizedDescription,
-                    suggestedActions: []
+                    summary: "找不到要删除的 Java 运行时。",
+                    suggestedActions: ["重新扫描 Java 后重试"]
                 ),
                 at: 0
             )
@@ -1360,12 +1655,15 @@ extension LauncherStore {
             return recommendedJavaRuntime(for: instance)
         case .manual:
             if let runtimeID = instance.profile.javaRuntimeID,
-               let runtime = javaRuntimes.first(where: { $0.id == runtimeID }) {
+               let runtime = javaRuntimes.first(where: {
+                   $0.id == runtimeID && !isJavaRuntimeDisabled($0)
+               }) {
                 return runtime
             }
             guard let runtimePath = instance.profile.javaRuntimePath else { return nil }
             return javaRuntimes.first {
                 $0.executableURL.standardizedFileURL.path == runtimePath
+                    && !isJavaRuntimeDisabled($0)
             }
         }
     }
@@ -1373,14 +1671,15 @@ extension LauncherStore {
     private func recommendedJavaRuntime(for instance: LauncherInstance) -> JavaRuntime? {
         let systemArchitecture = RuntimeArchitecture.currentSystem
         let recommendedMajor = javaRuntimeService.recommendedMajorVersion(for: instance.gameVersion)
-        let candidates = javaRuntimes.filter { $0.majorVersion == recommendedMajor }
+        let enabledRuntimes = javaRuntimes.filter { !isJavaRuntimeDisabled($0) }
+        let candidates = enabledRuntimes.filter { $0.majorVersion == recommendedMajor }
         return candidates
             .sorted {
                 javaArchitecturePreference($0, systemArchitecture: systemArchitecture)
                     < javaArchitecturePreference($1, systemArchitecture: systemArchitecture)
             }
             .first
-            ?? javaRuntimes
+            ?? enabledRuntimes
                 .sorted {
                     javaArchitecturePreference($0, systemArchitecture: systemArchitecture)
                         < javaArchitecturePreference($1, systemArchitecture: systemArchitecture)
@@ -1431,7 +1730,7 @@ extension LauncherStore {
                 taskGroupName: groupName
             ))
         }
-        downloadJobs = jobs
+        replaceDownloadJobs(jobs)
         diagnostics.insert(
             DiagnosticReport(
                 title: "已生成 Vanilla 安装计划",
@@ -1461,7 +1760,7 @@ extension LauncherStore {
                 instance: launchInstance,
                 source: selectedDownloadSource
             )
-            downloadJobs = jobs
+            replaceDownloadJobs(jobs)
             updateInstanceStatus(instance.id, status: .missingFiles)
             diagnostics.insert(
                 DiagnosticReport(
@@ -1493,7 +1792,7 @@ extension LauncherStore {
             plannedVersionMetadata = metadata
             plannedInstanceID = instance.id
             let jobs = downloadService.makeVanillaInstallJobs(metadata: metadata, instance: launchInstance, source: selectedDownloadSource)
-            downloadJobs = jobs
+            replaceDownloadJobs(jobs)
             updateInstanceStatus(instance.id, status: .missingFiles)
             diagnostics.insert(DiagnosticReport(title: "Quilt loader 安装计划已生成", severity: .info, summary: "已为 \(instance.name) 生成 Quilt loader 及其依赖的 \(jobs.count) 个下载任务；下载并验证核心 JAR 后才算安装完成。", suggestedActions: ["打开下载中心执行任务", "下载完成后准备 Native"]), at: 0)
             selectedSection = .downloads
@@ -1509,7 +1808,7 @@ extension LauncherStore {
             plannedVersionMetadata = metadata
             plannedInstanceID = instance.id
             let jobs = downloadService.makeVanillaInstallJobs(metadata: metadata, instance: launchInstance, source: selectedDownloadSource)
-            downloadJobs = jobs
+            replaceDownloadJobs(jobs)
             updateInstanceStatus(instance.id, status: .missingFiles)
             diagnostics.insert(DiagnosticReport(title: "Forge 安装计划已生成", severity: .info, summary: "已为 \(instance.name) 从官方 installer 读取 Forge metadata，并生成包含 loader 依赖的 \(jobs.count) 个下载任务；下载并验证核心 JAR 后才算安装完成。", suggestedActions: ["打开下载中心执行任务", "下载完成后准备 Native"]), at: 0)
             selectedSection = .downloads
@@ -1525,7 +1824,7 @@ extension LauncherStore {
             plannedVersionMetadata = metadata
             plannedInstanceID = instance.id
             let jobs = downloadService.makeVanillaInstallJobs(metadata: metadata, instance: launchInstance, source: selectedDownloadSource)
-            downloadJobs = jobs
+            replaceDownloadJobs(jobs)
             updateInstanceStatus(instance.id, status: .missingFiles)
             diagnostics.insert(DiagnosticReport(title: "NeoForge 安装计划已生成", severity: .info, summary: "已为 \(instance.name) 从官方 installer 读取 NeoForge metadata，并生成包含 loader 依赖的 \(jobs.count) 个下载任务；下载并验证核心 JAR 后才算安装完成。", suggestedActions: ["打开下载中心执行任务", "下载完成后准备 Native"]), at: 0)
             selectedSection = .downloads
@@ -1791,6 +2090,54 @@ extension LauncherStore {
         }
     }
 
+    func downloadModrinthModpack(version: ModrinthVersion, file: ModrinthFile) async {
+        let fileName = URL(fileURLWithPath: file.filename).lastPathComponent
+        guard !fileName.isEmpty, fileName != "." else {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "整合包下载失败",
+                    severity: .error,
+                    summary: "Modrinth 返回了无效的整合包文件名。",
+                    suggestedActions: ["重新打开整合包版本列表"]
+                ),
+                at: 0
+            )
+            return
+        }
+
+        let downloadsDirectory = FileManager.default.urls(
+            for: .downloadsDirectory,
+            in: .userDomainMask
+        )[0]
+        let modpacksDirectory = downloadsDirectory
+            .appendingPathComponent("MMCL", isDirectory: true)
+            .appendingPathComponent("Modpacks", isDirectory: true)
+        let destination = modpacksDirectory.appendingPathComponent(fileName)
+
+        do {
+            try await modrinthService.downloadFile(file, to: destination)
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "整合包已下载",
+                    severity: .info,
+                    summary: "\(version.name) 已保存到 \(destination.path)。",
+                    suggestedActions: ["可在 Finder 中打开下载目录查看文件"]
+                ),
+                at: 0
+            )
+        } catch {
+            diagnostics.insert(
+                DiagnosticReport(
+                    title: "整合包下载失败",
+                    severity: .error,
+                    summary: "\(file.filename)：\(error.localizedDescription)",
+                    suggestedActions: ["检查网络连接", "重新尝试下载"]
+                ),
+                at: 0
+            )
+        }
+    }
+
     func planVanillaInstallFromRemoteMetadata(for instance: LauncherInstance) async {
         guard let version = availableVersions.first(where: { $0.id == instance.gameVersion }) else {
             diagnostics.insert(
@@ -1834,7 +2181,7 @@ extension LauncherStore {
             taskGroupID: groupID,
             taskGroupName: groupName
         )
-        downloadJobs = assetJobs
+        replaceDownloadJobs(assetJobs)
         diagnostics.insert(
             DiagnosticReport(
                 title: "已展开资源文件",
@@ -1902,12 +2249,24 @@ extension LauncherStore {
         guard !queuedIDs.isEmpty else { return }
 
         speedTracker.reset()
+        downloadSpeedBytesPerSecond = 0
+        lastReportedDownloadBytes.removeAll()
 
         downloadService.onProgress = { [weak self] jobID, bytesWritten in
             Task { @MainActor in
                 guard let self else { return }
+                let now = Date()
+                guard now.timeIntervalSince(self.lastDownloadProgressUpdateAt) >= 0.1 else { return }
+                self.lastDownloadProgressUpdateAt = now
                 if let index = self.downloadJobs.firstIndex(where: { $0.id == jobID }) {
+                    let previousBytes = self.lastReportedDownloadBytes[jobID, default: 0]
+                    if bytesWritten > previousBytes {
+                        self.speedTracker.addBytes(bytesWritten - previousBytes)
+                        self.downloadSpeedBytesPerSecond = self.speedTracker.bytesPerSecond
+                        self.lastReportedDownloadBytes[jobID] = bytesWritten
+                    }
                     self.downloadJobs[index].completedBytes = bytesWritten
+                    self.refreshTaskGroups()
                 }
             }
         }
@@ -1916,7 +2275,12 @@ extension LauncherStore {
             Task { @MainActor in
                 guard let self else { return }
                 if self.transitionDownload(id: jobID, to: .completed, job: completedJob) {
-                    self.speedTracker.addBytes(completedJob.totalBytes)
+                    let previousBytes = self.lastReportedDownloadBytes[jobID, default: 0]
+                    if completedJob.totalBytes > previousBytes {
+                        self.speedTracker.addBytes(completedJob.totalBytes - previousBytes)
+                        self.downloadSpeedBytesPerSecond = self.speedTracker.bytesPerSecond
+                    }
+                    self.lastReportedDownloadBytes.removeValue(forKey: jobID)
                 }
             }
         }
@@ -1973,6 +2337,7 @@ extension LauncherStore {
         } else {
             downloadJobs[index].status = status
         }
+        refreshTaskGroups()
         queuedDownloadIDs.removeAll { $0 == id }
 
         if previousStatus == .running {
@@ -2004,6 +2369,7 @@ extension LauncherStore {
 
     func startNextQueuedDownloadIfNeeded() {
         guard maxDownloadThreads > 0 else { return }
+        var didStartDownload = false
         while activeDownloadCount < maxDownloadThreads, !queuedDownloadIDs.isEmpty {
             let nextID = queuedDownloadIDs.removeFirst()
             guard let index = downloadJobs.firstIndex(where: { $0.id == nextID }) else {
@@ -2014,7 +2380,11 @@ extension LauncherStore {
             }
             downloadJobs[index].status = .running
             activeDownloadCount += 1
+            didStartDownload = true
             downloadService.startDownload(downloadJobs[index])
+        }
+        if didStartDownload {
+            refreshTaskGroups()
         }
     }
 
@@ -2023,6 +2393,7 @@ extension LauncherStore {
             downloadService.pauseDownload(id: downloadJobs[index].id)
             downloadJobs[index].status = .paused
         }
+        refreshTaskGroups()
         diagnostics.insert(
             DiagnosticReport(
                 title: "下载已暂停",
@@ -2039,6 +2410,7 @@ extension LauncherStore {
             downloadService.resumeDownload(id: downloadJobs[index].id)
             downloadJobs[index].status = .running
         }
+        refreshTaskGroups()
     }
 
     func cancelDownloads() {
@@ -2072,6 +2444,7 @@ extension LauncherStore {
         if downloadJobs[index].status == .running {
             downloadService.pauseDownload(id: id)
             downloadJobs[index].status = .paused
+            refreshTaskGroups()
         }
     }
 
@@ -2080,6 +2453,7 @@ extension LauncherStore {
         if downloadJobs[index].status == .paused {
             downloadService.resumeDownload(id: id)
             downloadJobs[index].status = .running
+            refreshTaskGroups()
         }
     }
 
@@ -2210,30 +2584,37 @@ extension LauncherStore {
     }
 
     func monitorLaunchSession() {
+        launchMonitorTask?.cancel()
         guard let session = currentLaunchSession else { return }
         let pid = session.processIdentifier
 
-        Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] timer in
-            let result = kill(pid, 0)
-            if result != 0 {
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    timer.invalidate()
-                    let exitTime = Date()
-                    let duration = exitTime.timeIntervalSince(session.startedAt)
-                    let minutes = Int(duration) / 60
-                    let seconds = Int(duration) % 60
-                    self.currentLaunchSession = nil
-                    self.diagnostics.insert(
-                        DiagnosticReport(
-                            title: "Minecraft 已退出",
-                            severity: .info,
-                            summary: "进程 \(pid) 已退出，运行时长 \(minutes)分\(seconds)秒。日志：\(session.logFileURL.path)",
-                            suggestedActions: ["打开日志查看退出原因", "如果异常退出，检查 Java 版本和内存设置"]
-                        ),
-                        at: 0
-                    )
+        launchMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                } catch {
+                    return
                 }
+
+                guard !Task.isCancelled else { return }
+                guard kill(pid, 0) != 0 else { continue }
+                guard let self else { return }
+
+                let exitTime = Date()
+                let duration = exitTime.timeIntervalSince(session.startedAt)
+                let minutes = Int(duration) / 60
+                let seconds = Int(duration) % 60
+                self.currentLaunchSession = nil
+                self.diagnostics.insert(
+                    DiagnosticReport(
+                        title: "Minecraft 已退出",
+                        severity: .info,
+                        summary: "进程 \(pid) 已退出，运行时长 \(minutes)分\(seconds)秒。日志：\(session.logFileURL.path)",
+                        suggestedActions: ["打开日志查看退出原因", "如果异常退出，检查 Java 版本和内存设置"]
+                    ),
+                    at: 0
+                )
+                return
             }
         }
     }
