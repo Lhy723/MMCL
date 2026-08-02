@@ -78,6 +78,105 @@ final class DownloadExecutionTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
     }
 
+    func testDownloadServiceRejectsSizeMismatchWithoutSHA1() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let source = root.appendingPathComponent("source.dat")
+        let destination = root.appendingPathComponent("output.dat")
+        try Data("short".utf8).write(to: source)
+
+        let job = DownloadJob(
+            title: "大小错误",
+            source: .official,
+            remoteURL: source,
+            destination: destination,
+            totalBytes: 6
+        )
+
+        let result: Result<DownloadJob, Error> = await withCheckedContinuation { continuation in
+            let service = DownloadService()
+            service.onComplete = { _, job in
+                continuation.resume(returning: .success(job))
+            }
+            service.onError = { _, error in
+                continuation.resume(returning: .failure(error))
+            }
+            service.startDownload(job)
+        }
+
+        guard case .failure(let error) = result else {
+            XCTFail("大小不匹配不应报告为完成")
+            return
+        }
+        guard case DownloadExecutionError.sizeMismatch(_, 6, 5) = error else {
+            XCTFail("期望收到大小校验错误，实际为：\(error)")
+            return
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    func testDownloadServiceRejectsUnreadableDownloadedFile() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let sourceDirectory = root.appendingPathComponent("source-directory", isDirectory: true)
+        let destination = root.appendingPathComponent("output.dat")
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+
+        let job = DownloadJob(
+            title: "读取失败",
+            source: .official,
+            remoteURL: sourceDirectory,
+            destination: destination,
+            sha1: "0205c49d7dadcddde7b919c2b0763dd43d1679f0",
+            totalBytes: 15
+        )
+
+        let result: Result<DownloadJob, Error> = await withCheckedContinuation { continuation in
+            let service = DownloadService()
+            service.onComplete = { _, job in
+                continuation.resume(returning: .success(job))
+            }
+            service.onError = { _, error in
+                continuation.resume(returning: .failure(error))
+            }
+            service.startDownload(job)
+        }
+
+        guard case .failure(let error) = result else {
+            XCTFail("不可读取文件不应报告为完成")
+            return
+        }
+        guard case DownloadExecutionError.fileReadFailed = error else {
+            XCTFail("期望收到文件读取错误，实际为：\(error)")
+            return
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    func testDownloadServiceRejectsNon2xxHTTPResponses() throws {
+        let response = try XCTUnwrap(
+            HTTPURLResponse(
+                url: URL(string: "https://example.com/error")!,
+                statusCode: 404,
+                httpVersion: nil,
+                headerFields: nil
+            )
+        )
+
+        XCTAssertThrowsError(
+            try DownloadService.validateHTTPResponse(response, jobTitle: "错误响应")
+        ) { error in
+            XCTAssertEqual(
+                error as? DownloadExecutionError,
+                .httpStatus(jobTitle: "错误响应", statusCode: 404)
+            )
+        }
+    }
+
     @MainActor
     func testStoreExecutesQueuedDownloadsAndAddsFailureDiagnostic() async throws {
         let root = FileManager.default.temporaryDirectory

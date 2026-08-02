@@ -281,6 +281,7 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
     private var session: URLSession!
     private let lock = NSLock()
     private var activeTasks: [UUID: URLSessionDownloadTask] = [:]
+    private var localTaskTokens: [UUID: UUID] = [:]
     private var resumeDataMap: [UUID: Data] = [:]
     private var jobsByID: [UUID: DownloadJob] = [:]
 
@@ -305,49 +306,42 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
 
         // Handle file URLs directly (URLSessionDownloadTask doesn't support them)
         if remoteURL.isFileURL {
+            let jobToRun = runningJob
+            let localTaskToken = UUID()
+            lock.lock()
+            localTaskTokens[job.id] = localTaskToken
+            lock.unlock()
             DispatchQueue.global().async { [weak self] in
                 guard let self else { return }
-                let parentDir = job.destination.deletingLastPathComponent()
+                let fileManager = FileManager.default
+                var stagingURL: URL?
+                defer {
+                    if let stagingURL {
+                        try? fileManager.removeItem(at: stagingURL)
+                    }
+                }
                 do {
-                    try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
-                    if FileManager.default.fileExists(atPath: job.destination.path) {
-                        try FileManager.default.removeItem(at: job.destination)
-                    }
-                    try FileManager.default.copyItem(at: remoteURL, to: job.destination)
+                    let parentDirectory = jobToRun.destination.deletingLastPathComponent()
+                    try fileManager.createDirectory(at: parentDirectory, withIntermediateDirectories: true)
+                    let temporaryURL = Self.temporaryDownloadURL(for: jobToRun.destination)
+                    stagingURL = temporaryURL
+                    try fileManager.copyItem(at: remoteURL, to: temporaryURL)
 
-                    if let expectedSHA1 = job.sha1 {
-                        let data = try Data(contentsOf: job.destination)
-                        let actualSHA1 = Self.sha1Hex(for: data)
-                        if actualSHA1.caseInsensitiveCompare(expectedSHA1) != .orderedSame {
-                            try? FileManager.default.removeItem(at: job.destination)
-                            var failedJob = job
-                            failedJob.status = .failed
-                            self.lock.lock()
-                            self.jobsByID[job.id] = failedJob
-                            self.lock.unlock()
-                            self.onError?(job.id, DownloadExecutionError.sha1Mismatch(
-                                jobTitle: job.title,
-                                expected: expectedSHA1,
-                                actual: actualSHA1
-                            ))
-                            return
-                        }
+                    let byteCount = try Self.validateDownloadedFile(
+                        at: temporaryURL,
+                        for: jobToRun
+                    )
+                    guard self.isCurrentLocalTask(id: jobToRun.id, token: localTaskToken) else {
+                        return
                     }
-
-                    var completedJob = job
-                    completedJob.completedBytes = job.totalBytes
-                    completedJob.status = .completed
-                    self.lock.lock()
-                    self.jobsByID[job.id] = completedJob
-                    self.lock.unlock()
-                    self.onComplete?(job.id, completedJob)
+                    try Self.installStagedFile(from: temporaryURL, to: jobToRun.destination)
+                    self.markLocalCompleted(
+                        job: jobToRun,
+                        token: localTaskToken,
+                        completedBytes: byteCount
+                    )
                 } catch {
-                    var failedJob = job
-                    failedJob.status = .failed
-                    self.lock.lock()
-                    self.jobsByID[job.id] = failedJob
-                    self.lock.unlock()
-                    self.onError?(job.id, error)
+                    self.markLocalFailed(job: jobToRun, token: localTaskToken, error: error)
                 }
             }
             return
@@ -367,6 +361,68 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
         activeTasks[job.id] = task
         lock.unlock()
         task.resume()
+    }
+
+    private func markCompleted(job: DownloadJob, completedBytes: Int64) {
+        var completedJob = job
+        if completedJob.totalBytes <= 0 {
+            completedJob.totalBytes = completedBytes
+        }
+        completedJob.completedBytes = completedBytes
+        completedJob.status = .completed
+        lock.lock()
+        jobsByID[job.id] = completedJob
+        lock.unlock()
+        onComplete?(job.id, completedJob)
+    }
+
+    private func markFailed(job: DownloadJob, error: Error) {
+        var failedJob = job
+        failedJob.status = .failed
+        lock.lock()
+        jobsByID[job.id] = failedJob
+        lock.unlock()
+        onError?(job.id, error)
+    }
+
+    private func isCurrentLocalTask(id: UUID, token: UUID) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return localTaskTokens[id] == token && jobsByID[id]?.status == .running
+    }
+
+    private func markLocalCompleted(job: DownloadJob, token: UUID, completedBytes: Int64) {
+        lock.lock()
+        guard localTaskTokens[job.id] == token,
+              var completedJob = jobsByID[job.id],
+              completedJob.status == .running else {
+            lock.unlock()
+            return
+        }
+        localTaskTokens.removeValue(forKey: job.id)
+        if completedJob.totalBytes <= 0 {
+            completedJob.totalBytes = completedBytes
+        }
+        completedJob.completedBytes = completedBytes
+        completedJob.status = .completed
+        jobsByID[job.id] = completedJob
+        lock.unlock()
+        onComplete?(job.id, completedJob)
+    }
+
+    private func markLocalFailed(job: DownloadJob, token: UUID, error: Error) {
+        lock.lock()
+        guard localTaskTokens[job.id] == token,
+              var failedJob = jobsByID[job.id],
+              failedJob.status == .running else {
+            lock.unlock()
+            return
+        }
+        localTaskTokens.removeValue(forKey: job.id)
+        failedJob.status = .failed
+        jobsByID[job.id] = failedJob
+        lock.unlock()
+        onError?(job.id, error)
     }
 
     func pauseDownload(id: UUID) {
@@ -406,6 +462,7 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
         lock.lock()
         let task = activeTasks[id]
         activeTasks.removeValue(forKey: id)
+        localTaskTokens.removeValue(forKey: id)
         resumeDataMap.removeValue(forKey: id)
         var shouldNotifyWithoutTask = false
         if var job = jobsByID[id], job.status.isActive {
@@ -424,6 +481,7 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
         lock.lock()
         let tasks = Array(activeTasks.values)
         activeTasks.removeAll()
+        localTaskTokens.removeAll()
         resumeDataMap.removeAll()
         for (id, _) in jobsByID {
             if var job = jobsByID[id], job.status.isActive {
@@ -652,54 +710,34 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
               let jobID = UUID(uuidString: uuidString) else { return }
 
         lock.lock()
-        guard var job = jobsByID[jobID] else {
+        guard let job = jobsByID[jobID] else {
             lock.unlock()
             return
         }
         activeTasks.removeValue(forKey: jobID)
         lock.unlock()
 
-        let parentDirectory = job.destination.deletingLastPathComponent()
         do {
-            try FileManager.default.createDirectory(at: parentDirectory, withIntermediateDirectories: true)
-            if FileManager.default.fileExists(atPath: job.destination.path) {
-                try FileManager.default.removeItem(at: job.destination)
+            guard let response = downloadTask.response else {
+                throw DownloadExecutionError.invalidResponse(jobTitle: job.title)
             }
-            try FileManager.default.moveItem(at: location, to: job.destination)
+            try Self.validateHTTPResponse(response, jobTitle: job.title)
+            let byteCount = try Self.validateDownloadedFile(
+                at: location,
+                for: job,
+                responseExpectedBytes: response.expectedContentLength
+            )
+            let stagingURL = try Self.stageDownloadedFile(
+                from: location,
+                to: job.destination
+            )
+            defer { try? FileManager.default.removeItem(at: stagingURL) }
+            try Self.installStagedFile(from: stagingURL, to: job.destination)
+            markCompleted(job: job, completedBytes: byteCount)
         } catch {
-            job.status = .failed
-            lock.lock()
-            jobsByID[jobID] = job
-            lock.unlock()
-            onError?(jobID, error)
-            return
+            try? FileManager.default.removeItem(at: location)
+            markFailed(job: job, error: error)
         }
-
-        if let expectedSHA1 = job.sha1 {
-            if let data = try? Data(contentsOf: job.destination) {
-                let actualSHA1 = Self.sha1Hex(for: data)
-                if actualSHA1.caseInsensitiveCompare(expectedSHA1) != .orderedSame {
-                    try? FileManager.default.removeItem(at: job.destination)
-                    job.status = .failed
-                    lock.lock()
-                    jobsByID[jobID] = job
-                    lock.unlock()
-                    onError?(jobID, DownloadExecutionError.sha1Mismatch(
-                        jobTitle: job.title,
-                        expected: expectedSHA1,
-                        actual: actualSHA1
-                    ))
-                    return
-                }
-            }
-        }
-
-        job.completedBytes = job.totalBytes
-        job.status = .completed
-        lock.lock()
-        jobsByID[jobID] = job
-        lock.unlock()
-        onComplete?(jobID, job)
     }
 
     func urlSession(
@@ -715,13 +753,123 @@ final class DownloadService: NSObject, DownloadServicing, URLSessionDownloadDele
         lock.lock()
         if var job = jobsByID[jobID] {
             job.completedBytes = totalBytesWritten
-            if totalBytesExpectedToWrite > 0 {
+            if totalBytesExpectedToWrite > 0, job.totalBytes <= 0 {
                 job.totalBytes = totalBytesExpectedToWrite
             }
             jobsByID[jobID] = job
         }
         lock.unlock()
         onProgress?(jobID, totalBytesWritten)
+    }
+
+    static func validateHTTPResponse(_ response: URLResponse?, jobTitle: String) throws {
+        guard let response = response as? HTTPURLResponse else {
+            throw DownloadExecutionError.invalidResponse(jobTitle: jobTitle)
+        }
+        guard (200..<300).contains(response.statusCode) else {
+            throw DownloadExecutionError.httpStatus(
+                jobTitle: jobTitle,
+                statusCode: response.statusCode
+            )
+        }
+    }
+
+    private static func validateDownloadedFile(
+        at url: URL,
+        for job: DownloadJob,
+        responseExpectedBytes: Int64? = nil
+    ) throws -> Int64 {
+        let expectedSHA1 = job.sha1?.isEmpty == false ? job.sha1 : nil
+        let fileHandle: FileHandle
+        do {
+            fileHandle = try FileHandle(forReadingFrom: url)
+        } catch {
+            throw DownloadExecutionError.fileReadFailed(
+                jobTitle: job.title,
+                reason: error.localizedDescription
+            )
+        }
+        defer { try? fileHandle.close() }
+
+        var hasher = Insecure.SHA1()
+        var byteCount: Int64 = 0
+        do {
+            while let chunk = try fileHandle.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+                byteCount += Int64(chunk.count)
+                if expectedSHA1 != nil {
+                    hasher.update(data: chunk)
+                }
+            }
+        } catch {
+            throw DownloadExecutionError.fileReadFailed(
+                jobTitle: job.title,
+                reason: error.localizedDescription
+            )
+        }
+
+        let expectedSizes = [job.totalBytes, responseExpectedBytes ?? 0].filter { $0 > 0 }
+        if let expectedSize = expectedSizes.first(where: { $0 != byteCount }) {
+            throw DownloadExecutionError.sizeMismatch(
+                jobTitle: job.title,
+                expected: expectedSize,
+                actual: byteCount
+            )
+        }
+
+        if let expectedSHA1 {
+            let actualSHA1 = hasher.finalize()
+                .map { String(format: "%02x", $0) }
+                .joined()
+            if actualSHA1.caseInsensitiveCompare(expectedSHA1) != .orderedSame {
+                throw DownloadExecutionError.sha1Mismatch(
+                    jobTitle: job.title,
+                    expected: expectedSHA1,
+                    actual: actualSHA1
+                )
+            }
+        }
+        return byteCount
+    }
+
+    private static func temporaryDownloadURL(for destination: URL) -> URL {
+        destination.deletingLastPathComponent()
+            .appendingPathComponent(
+                ".\(destination.lastPathComponent).\(UUID().uuidString).download"
+            )
+    }
+
+    private static func stageDownloadedFile(from source: URL, to destination: URL) throws -> URL {
+        let fileManager = FileManager.default
+        let parentDirectory = destination.deletingLastPathComponent()
+        try fileManager.createDirectory(at: parentDirectory, withIntermediateDirectories: true)
+
+        let stagingURL = temporaryDownloadURL(for: destination)
+        do {
+            try fileManager.moveItem(at: source, to: stagingURL)
+        } catch {
+            do {
+                try fileManager.copyItem(at: source, to: stagingURL)
+            } catch {
+                try? fileManager.removeItem(at: stagingURL)
+                throw error
+            }
+            try? fileManager.removeItem(at: source)
+        }
+        return stagingURL
+    }
+
+    private static func installStagedFile(from stagingURL: URL, to destination: URL) throws {
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: destination.path) {
+            _ = try fileManager.replaceItemAt(
+                destination,
+                withItemAt: stagingURL,
+                backupItemName: nil,
+                options: .usingNewMetadataOnly
+            )
+        } else {
+            try fileManager.moveItem(at: stagingURL, to: destination)
+        }
     }
 
     func urlSession(
@@ -779,12 +927,24 @@ enum NativeLibraryPreparationError: LocalizedError, Equatable {
 
 enum DownloadExecutionError: LocalizedError, Equatable {
     case missingRemoteURL(jobTitle: String)
+    case invalidResponse(jobTitle: String)
+    case httpStatus(jobTitle: String, statusCode: Int)
+    case fileReadFailed(jobTitle: String, reason: String)
+    case sizeMismatch(jobTitle: String, expected: Int64, actual: Int64)
     case sha1Mismatch(jobTitle: String, expected: String, actual: String)
 
     var errorDescription: String? {
         switch self {
         case .missingRemoteURL(let jobTitle):
             return "缺少下载地址：\(jobTitle)"
+        case .invalidResponse(let jobTitle):
+            return "下载响应无效：\(jobTitle)"
+        case .httpStatus(let jobTitle, let statusCode):
+            return "下载请求失败（HTTP \(statusCode)）：\(jobTitle)"
+        case .fileReadFailed(let jobTitle, let reason):
+            return "下载文件读取失败：\(jobTitle)（\(reason)）"
+        case .sizeMismatch(let jobTitle, let expected, let actual):
+            return "文件大小校验失败：\(jobTitle)（期望 \(expected) 字节，实际 \(actual) 字节）"
         case .sha1Mismatch(let jobTitle, _, _):
             return "SHA-1 校验失败：\(jobTitle)"
         }
